@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself available offline.
 // (Translation models and text-recognition data are cached separately by
 // Transformers.js and Tesseract, in Cache Storage and IndexedDB.)
-const VERSION = 'd7fd8e09dea1';
+const VERSION = '89d298dd3aa2';
 const CACHE = `app-${VERSION}`;
 const PRECACHE = [
   "./",
@@ -11,6 +11,7 @@ const PRECACHE = [
   "./icons/icon-512.png",
   "./index.html",
   "./manifest.webmanifest",
+  "./ocr-worker.js",
   "./styles.css",
   "./vendor/bergamot/bergamot-translator-worker.js",
   "./vendor/bergamot/bergamot-translator-worker.wasm",
@@ -39,6 +40,17 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Cross-origin isolation lets the camera and voice engines use every CPU core (much faster on
+// iPhone). GitHub Pages can't send these headers, so the service worker adds them.
+function isolate(response) {
+  if (!response || response.type === 'opaque' || response.type === 'opaqueredirect' || response.status === 0) return response;
+  const headers = new Headers(response.headers);
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
@@ -50,9 +62,9 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           const copy = response.clone();
           caches.open(CACHE).then((cache) => cache.put('./index.html', copy));
-          return response;
+          return isolate(response);
         })
-        .catch(() => caches.match('./index.html', { ignoreSearch: true })),
+        .catch(() => caches.match('./index.html', { ignoreSearch: true }).then(isolate)),
     );
     return;
   }
@@ -61,13 +73,13 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request, { ignoreSearch: true }).then(
       (hit) =>
-        hit ||
+        (hit && isolate(hit)) ||
         fetch(event.request).then((response) => {
           if (response.ok && url.pathname.includes('/vendor/')) {
             const copy = response.clone();
             caches.open(VENDOR_CACHE).then((cache) => cache.put(event.request, copy));
           }
-          return response;
+          return isolate(response);
         }),
     ),
   );

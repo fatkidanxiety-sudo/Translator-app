@@ -4,8 +4,9 @@ import { translate, translateMany, warmUp } from './translate.js';
 import * as voice from './engine.js';
 import { detectLanguage } from './detect.js';
 import { Recorder, LiveRecognizer, speak, stopSpeaking } from './speech.js';
-import { autoRead, tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
+import { tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
 import { cleanForOcr } from './ocr-prep.js';
+import { readPhoto, releaseCameraReader, warmCameraReader, ocrScriptFor } from './camera-ocr.js';
 import { settings, saveSettings, getHistory, addHistory, updateHistory, deleteHistory, clearHistory, getPhraseCache, setPhraseCache } from './store.js';
 import { PHRASE_CATEGORIES } from './phrases.js';
 
@@ -118,17 +119,22 @@ async function downloadEverything() {
       });
       markSpeechInstalled();
     }
-    const ocrTodo = PACK_CODES.filter((c) => !ocrReady.has(c));
-    if (ocrTodo.length) {
+    if (!models.isOcrReady()) {
       bigJob = { phase: 'camera', fraction: 0 };
       renderDownloads();
-      await prepareOcr(ocrTodo, (f) => {
-        bigJob.fraction = f;
+      await models.downloadOcr(undefined, (f) => {
+        bigJob.fraction = f * 0.9;
         renderDownloads();
       });
-      ocrTodo.forEach((c) => ocrReady.add(c));
+    }
+    if (!ocrReady.has('he')) {
+      await prepareOcr(['he']); // Hebrew uses the older reader
+      ocrReady.add('he');
       localStorage.setItem('ocrReady', JSON.stringify([...ocrReady]));
     }
+    // Start the camera reader once while online, so its engine files are saved for offline use.
+    await warmCameraReader('latin');
+    releaseCameraReader();
     toast('All set — Parlivo now works fully offline ✓', 3500);
   } catch (error) {
     toast(friendlyError(error), 4500);
@@ -147,11 +153,11 @@ function markSpeechInstalled() {
 function totalEverythingBytes(remainingOnly) {
   let bytes = models.packBytes(PACK_CODES, remainingOnly);
   if (!remainingOnly || !speechInstalled) bytes += SPEECH_MODEL_MB * 1e6;
-  if (!remainingOnly || PACK_CODES.some((c) => !ocrReady.has(c))) bytes += OCR_MB * 1e6;
+  bytes += models.ocrBytes(undefined, remainingOnly);
   return bytes;
 }
 
-const everythingReady = () => PACK_CODES.every(models.isPackInstalled) && speechInstalled && PACK_CODES.every((c) => ocrReady.has(c));
+const everythingReady = () => PACK_CODES.every(models.isPackInstalled) && speechInstalled && models.isOcrReady() && ocrReady.has('he');
 
 /** Updates every piece of download UI: top strip, hero card, settings, screen cards. */
 function renderDownloads() {
@@ -160,7 +166,8 @@ function renderDownloads() {
   let text = null;
   let fraction = 0;
   if (downloading) {
-    const what = downloading.codes.length === 1 ? nameOf(downloading.codes[0]) : downloading.codes.length > 1 ? `${downloading.codes.length} languages` : 'language';
+    const what =
+      downloading.codes.length === 1 ? nameOf(downloading.codes[0]) : downloading.codes.length > 1 ? `${downloading.codes.length} languages` : bigJob?.phase === 'camera' ? 'camera text reading' : 'files';
     const left = downloading.bytesPerSecond ? (downloading.total - downloading.done) / downloading.bytesPerSecond : NaN;
     text = `Downloading ${what} · ${Math.round(downloading.fraction * 100)}%${downloading.bytesPerSecond ? ` · ${fmtTime(left)}` : ''}`;
     fraction = downloading.fraction;
@@ -546,7 +553,8 @@ async function ensureSpeechModel() {
 /** Starts listening. `languageCode` may be null (detect). `onWords(text)` gets words as they're heard. */
 async function startRecording(owner, languageCode, onWords) {
   stopSpeaking();
-  releaseOcr(); // the phone has limited memory: free the camera engine while listening
+  releaseOcr(); // the phone has limited memory: free the camera engines while listening
+  releaseCameraReader();
   micLang = languageCode;
   if (LiveRecognizer.available && !liveUnavailable) {
     const rec = new LiveRecognizer((text) => micOwner === owner && onWords?.(text));
@@ -795,6 +803,10 @@ function renderCameraLangs() {
 
 async function enterCamera() {
   renderCameraLangs();
+  voice.release();
+  if (models.isOcrReady([ocrScriptFor(settings.source === 'auto' ? settings.lastOther ?? 'en' : settings.source) ?? 'latin'])) {
+    warmCameraReader(ocrScriptFor(settings.source === 'auto' ? 'en' : settings.source) ?? 'latin');
+  }
   if (photo) return;
   await startCamera();
 }
@@ -937,6 +949,13 @@ $('p-mode').addEventListener('click', (e) => {
   if (button) setPhotoMode(button.dataset.mode);
 });
 
+/** Fixes common photo-reading slips that confuse translation (e.g. "Pecoríno" in Italian). */
+function cleanOcrText(text, code) {
+  if (code === 'it') return text.replace(/í/g, 'i').replace(/ú/g, 'u').replace(/á/g, 'a').replace(/ó/g, 'o');
+  if (code === 'en' || code === 'nl' || code === 'de') return text.replace(/[íì]/g, 'i').replace(/[áà]/g, 'a');
+  return text;
+}
+
 async function processPhoto() {
   if (!photo) return;
   const run = ++photoRun;
@@ -944,71 +963,95 @@ async function processPhoto() {
   const busy = $('p-busy');
   busy.hidden = false;
   $('p-lines').hidden = true;
+  $('p-lines').innerHTML = '';
+  $('p-overlay').innerHTML = '';
+  $('p-hint').textContent = '';
   const status = (t) => run === photoRun && ($('p-busy-text').textContent = t);
 
   voice.release(); // free the voice engine while reading the photo
+  releaseOcr(); // and the old fallback reader
   try {
-    status('Reading text…');
-    const preferred = [settings.target, settings.lastOther, ...models.installedPacks()].filter(Boolean);
-    const loading = (p, s) => /load/i.test(s) && status('Preparing text reading…');
-    const read = (image, cleaned) =>
-      settings.source === 'auto'
-        ? autoRead(image, preferred, status, { cleaned })
-        : readText(image, tesseractLangsFor(settings.source), loading, { cleaned });
-    // Read a cleaned-up copy (texture and specks removed); fall back to the original photo.
-    await new Promise((r) => setTimeout(r, 30)); // let the "Reading text…" overlay paint first
-    const cleanedImage = cleanForOcr(current.canvas);
-    const image = cleanedImage?.canvas ?? current.canvas;
-    let result = await read(image, false);
+    status('Finding text…');
+    await new Promise((r) => setTimeout(r, 30)); // let the overlay paint first
+    const preferred = [settings.lastOther, settings.target, ...models.installedPacks()].filter(Boolean);
+    let result = await readPhoto(current.canvas, settings.source, preferred, status);
     if (run !== photoRun) return;
-    if (cleanedImage && (!result.lines.length || result.confidence < 50)) {
-      const original = await read(current.canvas, false);
+    if (result === null) {
+      // Languages the camera reader doesn't cover (Hebrew): use the older reader.
+      releaseCameraReader();
+      const cleanedImage = cleanForOcr(current.canvas);
+      result = await readText(cleanedImage?.canvas ?? current.canvas, tesseractLangsFor(settings.source), (p, s) => /load/i.test(s) && status('Preparing text reading…'));
       if (run !== photoRun) return;
-      if (original.confidence > result.confidence + 8 || !result.lines.length) result = original;
     }
-    let { lines, confidence, script, pass } = result;
-    // A mixed-language pass found the language: read once more with just that language for accuracy.
-    if (settings.source === 'auto' && pass && lines.length) {
-      const guess = detectLanguage(lines.map((l) => l.text).join(' '));
-      if (guess && lang(guess)?.tess && !(pass.length === 1 && pass[0] === lang(guess).tess)) {
-        const again = await readText(image, tesseractLangsFor(guess));
-        if (run !== photoRun) return;
-        if (again.confidence >= confidence - 5 && again.lines.length) ({ lines, confidence } = again);
-      }
-    }
+    const { lines, confidence, script } = result;
     if (!lines.length) {
       busy.hidden = true;
       $('p-hint').textContent = 'No text found. Get a little closer, hold steady, and try again.';
       return;
     }
 
-    let src = settings.source;
-    if (src === 'auto') {
-      src = detectLanguage(lines.map((l) => l.text).join(' ')) ?? (script === 'Latin' || !script ? 'en' : null);
-      if (!src) throw new Error('Couldn’t tell which language this is. Choose it with the left button.');
-    }
+    // Work out each line's language (menus often mix Italian and English).
+    const DEFAULT_FOR_SCRIPT = { latin: 'en', cjk: 'zh', eslav: 'ru', arabic: 'ar', korean: 'ko', hindi: 'hi', thai: 'th', greek: 'el' };
+    // Fragments with fewer than 3 letters (e.g. "di", "e") aren't worth translating on their own.
+    const hasLetters = (t) => (t.match(/\p{L}/gu) ?? []).length >= 3 || /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(t);
     let tgt = settings.target;
+    let src = settings.source;
+    let lineLangs = lines.map(() => src);
+    if (src === 'auto') {
+      lineLangs = lines.map((l) => (hasLetters(l.text) ? detectLanguage(l.text) : null));
+      const weight = new Map();
+      lineLangs.forEach((code, i) => code && weight.set(code, (weight.get(code) ?? 0) + lines[i].text.length));
+      const ranked = [...weight.entries()].sort((a, b) => b[1] - a[1]).map(([code]) => code);
+      // The photo's language = the most common one that isn't what you translate into.
+      src = ranked.find((c) => c !== tgt) ?? ranked[0] ?? detectLanguage(lines.map((l) => l.text).join(' ')) ?? DEFAULT_FOR_SCRIPT[script] ?? null;
+      // Little text (a sign, a cover) is hard to identify: reuse the language of recent photos.
+      const letterCount = lines.reduce((n, l) => n + (l.text.match(/\p{L}/gu) ?? []).length, 0);
+      if (letterCount < 40 && settings.lastPhotoLang && ocrScriptFor(settings.lastPhotoLang) === script && settings.lastPhotoLang !== tgt) src = settings.lastPhotoLang;
+      else if (letterCount >= 40 && src) saveSettings({ lastPhotoLang: src });
+      if (!src) throw new Error('Couldn’t tell which language this is. Choose it with the left button.');
+      // Each line is either already in your language (left as is) or in the photo's main language.
+      lineLangs = lineLangs.map((code) => (code === tgt ? tgt : src));
+    }
     if (src === tgt) tgt = tgt === 'en' ? (settings.lastOther ?? 'es') : 'en';
     current.src = src;
     current.tgt = tgt;
     $('p-source').textContent = settings.source === 'auto' ? `${nameOf(src)} ✨` : nameOf(src);
 
-    if (missingPacks([src, tgt]).length) {
-      status(`Downloading ${listNames(missingPacks([src, tgt]))}…`);
-      if (!(await ensurePacks([src, tgt]))) {
+    const needed = [...new Set(lineLangs.filter((c) => c && c !== tgt).concat(src))];
+    if (missingPacks([...needed, tgt]).length) {
+      status(`Downloading ${listNames(missingPacks([...needed, tgt]))}…`);
+      if (!(await ensurePacks([...needed, tgt]))) {
         busy.hidden = true;
         return;
       }
     }
     status('Translating…');
-    const translated = await translateMany(lines.map((l) => l.text), src, tgt);
+    // Translate each language group; lines already in the target language, and prices/numbers, stay as they are.
+    const translated = lines.map((l) => l.text);
+    const groups = new Map();
+    lines.forEach((l, i) => {
+      const code = lineLangs[i] ?? src;
+      if (!hasLetters(l.text) || code === tgt) return;
+      if (!groups.has(code)) groups.set(code, []);
+      groups.get(code).push(i);
+    });
+    for (const [code, indices] of groups) {
+      const out = await translateMany(indices.map((i) => cleanOcrText(lines[i].text, code)), code, tgt);
+      indices.forEach((i, k) => {
+        const original = lines[i].text;
+        const result = out[k] ?? original;
+        // Unknown single words (names, misreads) can make the model invent a phrase: keep those as they are.
+        const words = original.trim().split(/\s+/).length;
+        translated[i] = words <= 2 && result.length > original.length * 2.2 + 4 ? original : result;
+      });
+    }
     if (run !== photoRun) return;
-    current.lines = lines.map((l, i) => ({ ...l, translated: translated[i] ?? '' }));
+    current.lines = lines.map((l, i) => ({ ...l, translated: translated[i], same: translated[i] === l.text }));
     drawOverlay();
     renderPhotoLines();
     // Low confidence: let the person tap words instead of covering the photo with guesses.
-    setPhotoMode(confidence < 62 ? 'tap' : 'auto');
-    if (confidence < 62) $('p-hint').textContent = 'This photo is hard to read — tap the words you want translated.';
+    setPhotoMode(confidence < 70 ? 'tap' : 'auto');
+    if (confidence < 70) $('p-hint').textContent = 'This photo is hard to read — tap the words you want translated.';
     if (settings.saveHistory) {
       addHistory({ source: lines.map((l) => l.text).join('\n'), translation: current.lines.map((l) => l.translated).join('\n'), from: src, to: tgt, origin: 'camera' });
     }
@@ -1024,7 +1067,7 @@ function drawOverlay() {
   const img = $('p-image');
   if (!photo?.lines.length) return;
   const scale = img.clientWidth / photo.canvas.width;
-  const boxes = photo.lines.map(({ bbox, translated }) => {
+  const boxes = photo.lines.filter((l) => !l.same).map(({ bbox, translated }) => {
     const rawH = (bbox.y1 - bbox.y0) * scale;
     const padX = rawH * 0.25;
     const padY = rawH * 0.22;
@@ -1345,6 +1388,9 @@ function renderPacks() {
     return `<div class="list-row pack"><div class="main">${esc(l.name)} <span class="sub">· ${esc(l.native)}</span>
       <div class="sub">${fmtBytes(models.packBytes([l.code]))}</div></div>${right}</div>`;
   });
+  const camReady = models.isOcrReady();
+  rows.push(`<div class="list-row pack"><div class="main">📷 Camera text reading<div class="sub">All languages · ${fmtBytes(models.ocrBytes())}</div></div>
+    ${camReady ? '<span class="pill ok">✓ Ready</span>' : `<button class="pill" data-download="camera" ${downloading || bigJob ? 'disabled' : ''}>Download</button>`}</div>`);
   rows.push(`<div class="list-row pack"><div class="main">🎙️ Voice input<div class="sub">All languages · ${SPEECH_MODEL_MB} MB</div></div>
     ${speechInstalled ? '<button class="pill ok" data-remove="speech">✓ Ready</button>' : `<button class="pill" data-download="speech" ${downloading || bigJob ? 'disabled' : ''}>Download</button>`}</div>`);
   $('packs').innerHTML = rows.join('');
@@ -1384,6 +1430,15 @@ $('settings').addEventListener('click', async (e) => {
   if (dl) {
     if (dl.dataset.download === 'speech') {
       if (await ensureSpeechModel()) renderPacks();
+    } else if (dl.dataset.download === 'camera') {
+      try {
+        await models.downloadOcr();
+        await warmCameraReader('latin');
+        toast('Camera text reading is ready');
+      } catch (error) {
+        toast(friendlyError(error), 4000);
+      }
+      renderPacks();
     } else ensurePacks([dl.dataset.download]);
   }
   const rm = e.target.closest('[data-remove]');
@@ -1506,6 +1561,7 @@ updateNetwork();
 
 models
   .scanInstalled()
+  .then(() => models.scanOcr())
   .then(() => {
     renderDownloads();
     // Start the engine and load the usual languages now, so translating is instant when needed.

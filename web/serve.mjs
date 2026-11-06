@@ -14,7 +14,8 @@ createServer(async (req, res) => {
   if (urlPath.endsWith('/')) file = path.join(file, 'index.html');
   try {
     const body = await readFile(file);
-    res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] ?? 'application/octet-stream' });
+    const isolate = process.env.ISOLATE ? { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp' } : {};
+    res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] ?? 'application/octet-stream', ...isolate });
     res.end(body);
   } catch {
     res.writeHead(404).end('Not found');

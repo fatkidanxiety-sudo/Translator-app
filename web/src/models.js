@@ -164,21 +164,31 @@ export async function downloadPairs(pairs, onProgress, codes = []) {
     await job.promise.catch(() => {});
     if (pairs.every((p) => installedPairs.has(p))) return;
   }
-  const cache = await caches.open(CACHE);
-  const have = new Set((await cache.keys()).map((r) => r.url));
   const files = [];
   for (const pair of pairs) {
     const entry = reg.pairs[pair];
     if (!entry) continue;
-    for (const [kind, info] of Object.entries(entry.files)) {
-      if (!have.has(fileKey(pair, kind))) files.push({ pair, kind, info });
+    for (const [kind, info] of Object.entries(entry.files)) files.push({ pair, kind, info });
+  }
+  await runDownload(files, onProgress, codes);
+  pairs.forEach((p) => reg.pairs[p] && installedPairs.add(p));
+  emit();
+}
+
+/** Downloads every missing file in `allFiles` ({pair, kind, info}), several in parallel, with progress. */
+async function runDownload(allFiles, onProgress, codes) {
+  // One download at a time; wait for any running one first.
+  while (job) {
+    try {
+      await (job.promise ?? new Promise((r) => setTimeout(r, 50)));
+    } catch {
+      /* the other download failed; carry on */
     }
   }
-  if (!files.length) {
-    pairs.forEach((p) => reg.pairs[p] && installedPairs.add(p));
-    emit();
-    return;
-  }
+  const cache = await caches.open(CACHE);
+  const have = new Set((await cache.keys()).map((r) => r.url));
+  const files = allFiles.filter((f) => !have.has(fileKey(f.pair, f.kind)));
+  if (!files.length) return;
 
   const controller = new AbortController();
   const current = { codes, total: files.reduce((s, f) => s + f.info.gzSize, 0), done: 0, startedAt: performance.now(), controller, speed: 0, current: null };
@@ -199,7 +209,7 @@ export async function downloadPairs(pairs, onProgress, codes = []) {
   // Biggest files first, so the parallel downloads finish at about the same time.
   files.sort((a, b) => b.info.gzSize - a.info.gzSize);
   const queue = [...files];
-  const finishedPairs = new Map(pairs.map((p) => [p, 0]));
+  const finishedPairs = new Map(files.map((f) => [f.pair, 0]));
   const needed = new Map();
   for (const f of files) needed.set(f.pair, (needed.get(f.pair) ?? 0) + 1);
 
@@ -221,7 +231,7 @@ export async function downloadPairs(pairs, onProgress, codes = []) {
           }
         }
         finishedPairs.set(f.pair, finishedPairs.get(f.pair) + 1);
-        if (finishedPairs.get(f.pair) === needed.get(f.pair)) {
+        if (finishedPairs.get(f.pair) === needed.get(f.pair) && f.pair !== 'ocr') {
           installedPairs.add(f.pair);
           emit();
         }
@@ -232,7 +242,6 @@ export async function downloadPairs(pairs, onProgress, codes = []) {
 
   try {
     await current.promise;
-    pairs.forEach((p) => reg.pairs[p] && !needed.has(p) && installedPairs.add(p));
     onProgress?.(1);
   } catch (error) {
     if (controller.signal.aborted) throw new Error('Download stopped.');
@@ -241,6 +250,76 @@ export async function downloadPairs(pairs, onProgress, codes = []) {
     if (job === current) job = null;
     emit();
   }
+}
+
+// ---- Camera text-reading models (PaddleOCR) ----------------------------------------
+
+export const OCR_SCRIPTS = ['latin', 'cjk', 'eslav', 'korean', 'arabic', 'hindi', 'thai', 'greek'];
+
+/** Registry entries for the text finder and the given readers, as {key, kind, info}. */
+function ocrFiles(reg, scripts) {
+  const files = [{ pair: 'ocr', kind: 'det', info: reg.ocr.det }];
+  for (const script of scripts) {
+    const r = reg.ocr.rec[script];
+    if (!r) continue;
+    files.push({ pair: 'ocr', kind: `rec-${script}`, info: r.model }, { pair: 'ocr', kind: `dict-${script}`, info: r.dict });
+  }
+  return files;
+}
+
+const ocrInstalled = new Set();
+
+export async function scanOcr() {
+  const reg = await loadRegistry().catch(() => null);
+  if (!reg?.ocr) return;
+  const cache = await caches.open(CACHE);
+  const have = new Set((await cache.keys()).map((r) => r.url));
+  ocrInstalled.clear();
+  if (!have.has(fileKey('ocr', 'det'))) return;
+  ocrInstalled.add('det');
+  for (const script of OCR_SCRIPTS) {
+    if (have.has(fileKey('ocr', `rec-${script}`)) && have.has(fileKey('ocr', `dict-${script}`))) ocrInstalled.add(script);
+  }
+}
+
+export const isOcrReady = (scripts = OCR_SCRIPTS) => ocrInstalled.has('det') && scripts.every((s) => ocrInstalled.has(s));
+
+export function ocrBytes(scripts = OCR_SCRIPTS, remainingOnly = false) {
+  if (!registry?.ocr) return 70e6;
+  return ocrFiles(registry, scripts)
+    .filter((f) => !(remainingOnly && (f.kind === 'det' ? ocrInstalled.has('det') : ocrInstalled.has(f.kind.replace(/^(rec|dict)-/, '')))))
+    .reduce((sum, f) => sum + f.info.gzSize, 0);
+}
+
+/** Downloads the text finder and readers for these scripts. */
+export async function downloadOcr(scripts = OCR_SCRIPTS, onProgress) {
+  const reg = await loadRegistry();
+  if (!reg.ocr) throw new Error('Camera models aren’t available yet.');
+  await runDownload(ocrFiles(reg, scripts), onProgress, []);
+  await scanOcr();
+}
+
+/** Returns { det, model, dict } for a script (ArrayBuffers + character list), downloading if needed. */
+export async function getOcrModels(script, { includeDet = true } = {}) {
+  const reg = await loadRegistry();
+  if (!ocrInstalled.has('det') || !ocrInstalled.has(script)) {
+    if (!navigator.onLine) throw new Error('offline-not-downloaded');
+    await downloadOcr([script]);
+  }
+  const cache = await caches.open(CACHE);
+  const read = async (kind) => {
+    const response = await cache.match(fileKey('ocr', kind));
+    if (!response) {
+      ocrInstalled.delete(script);
+      throw new Error('A camera file is missing. Please download it again in Settings.');
+    }
+    return response.arrayBuffer();
+  };
+  return {
+    det: includeDet ? await read('det') : null,
+    model: await read(`rec-${script}`),
+    dict: JSON.parse(new TextDecoder().decode(await read(`dict-${script}`))),
+  };
 }
 
 /** Downloads whole language packs (to and from English). */

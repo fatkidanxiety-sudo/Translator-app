@@ -29,7 +29,7 @@ for (const f of ['tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.j
 }
 
 await esbuild.build({
-  entryPoints: { app: 'src/main.js', worker: 'src/engine.worker.js' },
+  entryPoints: { app: 'src/main.js', worker: 'src/engine.worker.js', 'ocr-worker': 'src/ocr.worker.js' },
   outdir: OUT,
   bundle: true,
   format: 'esm',

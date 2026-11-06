@@ -8,6 +8,8 @@ env.useBrowserCache = true;
 // The ONNX runtime's WebAssembly files ship with the app (see build.mjs).
 env.backends.onnx.wasm.wasmPaths = new URL('./vendor/ort/', self.location.href).href;
 env.backends.onnx.wasm.proxy = false;
+// Use several cores when the page is cross-origin isolated (see sw.js).
+if (self.crossOriginIsolated) env.backends.onnx.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
 
 const CACHE_NAME = 'transformers-cache';
 const HUB = 'https://huggingface.co';
