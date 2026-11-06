@@ -231,7 +231,7 @@ async function runDownload(allFiles, onProgress, codes) {
           }
         }
         finishedPairs.set(f.pair, finishedPairs.get(f.pair) + 1);
-        if (finishedPairs.get(f.pair) === needed.get(f.pair) && f.pair !== 'ocr') {
+        if (finishedPairs.get(f.pair) === needed.get(f.pair) && registry?.pairs[f.pair]) {
           installedPairs.add(f.pair);
           emit();
         }
@@ -322,9 +322,43 @@ export async function getOcrModels(script, { includeDet = true } = {}) {
   };
 }
 
-/** Downloads whole language packs (to and from English). */
-export function downloadPacks(codes, onProgress) {
-  return downloadPairs(codes.flatMap(packPairs), onProgress, codes);
+/** Downloads whole language packs (to and from English, plus the spelling word list). */
+export async function downloadPacks(codes, onProgress) {
+  await downloadPairs(codes.flatMap(packPairs), onProgress, codes);
+  await downloadDicts(codes).catch(() => {}); // small; never block translation on it
+}
+
+// ---- Word lists for correcting camera misreads ------------------------------------------
+
+const dictInstalled = new Set();
+
+export async function scanDicts() {
+  const reg = await loadRegistry().catch(() => null);
+  if (!reg?.dicts) return;
+  const cache = await caches.open(CACHE);
+  const have = new Set((await cache.keys()).map((r) => r.url));
+  for (const code of Object.keys(reg.dicts.langs)) if (have.has(fileKey('dict', code))) dictInstalled.add(code);
+}
+
+export async function downloadDicts(codes) {
+  const reg = await loadRegistry();
+  if (!reg.dicts) return;
+  const files = codes.filter((c) => reg.dicts.langs[c] && !dictInstalled.has(c)).map((c) => ({ pair: 'dict', kind: c, info: reg.dicts.langs[c] }));
+  if (!files.length) return;
+  await runDownload(files, null, []);
+  files.forEach((f) => dictInstalled.add(f.kind));
+}
+
+/** The language's common words, most frequent first (null if there's no list for it). */
+export async function getDictWords(code) {
+  const reg = await loadRegistry().catch(() => null);
+  if (!reg?.dicts?.langs[code]) return null;
+  if (!dictInstalled.has(code)) {
+    if (!navigator.onLine) return null;
+    await downloadDicts([code]);
+  }
+  const response = await (await caches.open(CACHE)).match(fileKey('dict', code));
+  return response ? (await response.text()).split('\n') : null;
 }
 
 export function cancelDownload() {

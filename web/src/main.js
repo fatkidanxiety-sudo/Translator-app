@@ -7,6 +7,7 @@ import { Recorder, LiveRecognizer, speak, stopSpeaking } from './speech.js';
 import { tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
 import { cleanForOcr } from './ocr-prep.js';
 import { readPhoto, releaseCameraReader, warmCameraReader, ocrScriptFor } from './camera-ocr.js';
+import { loadDictionary, correctLine } from './spell.js';
 import { settings, saveSettings, getHistory, addHistory, updateHistory, deleteHistory, clearHistory, getPhraseCache, setPhraseCache } from './store.js';
 import { PHRASE_CATEGORIES } from './phrases.js';
 
@@ -110,6 +111,7 @@ async function downloadEverything() {
   renderDownloads();
   try {
     await models.downloadPacks(PACK_CODES);
+    await models.downloadDicts(['en', ...PACK_CODES]).catch(() => {});
     if (!speechInstalled) {
       bigJob = { phase: 'voice', fraction: 0 };
       renderDownloads();
@@ -1011,6 +1013,11 @@ $('p-mode').addEventListener('click', (e) => {
 function cleanOcrText(text, code) {
   // Photo reading sometimes drops the space before a capital: "SalumiNostrani", "dellaValdichiana".
   if (lang(code)?.script === 'Latin' || lang(code)?.script === 'Cyrillic' || lang(code)?.script === 'Greek') text = text.replace(/(\p{Ll})(\p{Lu}\p{Ll})/gu, '$1 $2').replace(/(\p{L})\(/gu, '$1 (');
+  if (code === 'ru' || code === 'uk') {
+    // A word made only of Latin letters that look Cyrillic is a misread ("Kacca" → "Касса").
+    const map = { A: 'А', a: 'а', B: 'В', C: 'С', c: 'с', E: 'Е', e: 'е', H: 'Н', K: 'К', k: 'к', M: 'М', O: 'О', o: 'о', P: 'Р', p: 'р', T: 'Т', X: 'Х', x: 'х', y: 'у', Y: 'У' };
+    text = text.replace(/\b[ABCEHKMOPTXYaceokpxy]{2,}\b/g, (w) => [...w].map((c) => map[c] ?? c).join(''));
+  }
   if (code === 'it') return text.replace(/í/g, 'i').replace(/ú/g, 'u').replace(/á/g, 'a').replace(/ó/g, 'o').replace(/Í/g, 'I').replace(/Ú/g, 'U').replace(/Á/g, 'A').replace(/Ó/g, 'O');
   if (code === 'en' || code === 'nl' || code === 'de') return text.replace(/[íì]/g, 'i').replace(/[áà]/g, 'a');
   return text;
@@ -1076,6 +1083,20 @@ async function processPhoto() {
     current.src = src;
     current.tgt = tgt;
     $('p-source').textContent = settings.source === 'auto' ? `${nameOf(src)} ✨` : nameOf(src);
+
+    // Fix words the camera was unsure about (e.g. "fraftoria" → "trattoria") so they can be translated.
+    status('Checking spelling…');
+    const joiner = script === 'cjk' || script === 'thai' ? '' : ' ';
+    for (const code of new Set(lineLangs.filter(Boolean))) {
+      const dict = await loadDictionary(code);
+      if (!dict) continue;
+      lines.forEach((line, i) => {
+        if (lineLangs[i] !== code || !line.words?.length) return;
+        const fixed = correctLine(line.words, dict, joiner);
+        if (fixed && fixed !== line.text) line.text = fixed;
+      });
+    }
+    if (run !== photoRun) return;
 
     const needed = [...new Set(lineLangs.filter((c) => c && c !== tgt).concat(src))];
     if (missingPacks([...needed, tgt]).length) {
@@ -1622,6 +1643,7 @@ updateNetwork();
 models
   .scanInstalled()
   .then(() => models.scanOcr())
+  .then(() => models.scanDicts())
   .then(() => {
     renderDownloads();
     // Start the engine and load the usual languages now, so translating is instant when needed.
