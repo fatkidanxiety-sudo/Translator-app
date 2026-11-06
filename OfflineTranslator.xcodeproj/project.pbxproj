@@ -251,7 +251,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Offline Translator";
+				INFOPLIST_KEY_CFBundleDisplayName = Parlivo;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCameraUsageDescription = "The camera is used to photograph signs, menus and documents so their text can be translated on your iPhone.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone is used to hear what you say so it can be translated on your iPhone.";
@@ -283,7 +283,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Offline Translator";
+				INFOPLIST_KEY_CFBundleDisplayName = Parlivo;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSCameraUsageDescription = "The camera is used to photograph signs, menus and documents so their text can be translated on your iPhone.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "The microphone is used to hear what you say so it can be translated on your iPhone.";

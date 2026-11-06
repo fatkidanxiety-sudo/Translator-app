@@ -1,13 +1,13 @@
 {
-  "name": "Offline Translator",
-  "short_name": "Translator",
+  "name": "Parlivo — Offline Translator",
+  "short_name": "Parlivo",
   "description": "Translate text, voice, photos and conversations with no internet connection.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f2f2f7",
-  "theme_color": "#2779d9",
+  "theme_color": "#11325a",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

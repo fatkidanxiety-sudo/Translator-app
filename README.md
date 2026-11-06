@@ -1,6 +1,6 @@
-# Offline Translator
+# Parlivo — Offline Translator
 
-A translator that works with **no internet connection**. There are two versions in this repo:
+Parlivo is a translator that works with **no internet connection**. There are two versions in this repo:
 
 | | **Web app** (`web/`, built into `docs/`) | **Native iPhone app** (`OfflineTranslator/`) |
 | --- | --- | --- |
@@ -18,7 +18,8 @@ A translator that works with **no internet connection**. There are two versions 
 1. On GitHub, open this repo › **Settings** › **Pages**. On a phone, use your browser's
    "Request Desktop Website" option if the Settings tab is hidden.
 2. Under **Build and deployment**, set **Source** to **Deploy from a branch**.
-3. Pick the branch **`claude/offline-translator-app`** and the folder **`/docs`**, then tap **Save**.
+3. Pick the branch **`claude/offline-translator-app`** and tap **Save**. The folder can be `/docs` or `/ (root)`;
+   the root has a small page that forwards to the app.
 4. After a minute or two the app is live at
    **https://fatkidanxiety-sudo.github.io/Translator-app/**
 
@@ -26,7 +27,7 @@ A translator that works with **no internet connection**. There are two versions 
 
 1. Open that link in **Safari**.
 2. Tap the **Share** button, then **Add to Home Screen**.
-3. Open **Translator** from your Home Screen. Then go to ⚙︎ › **Offline languages** and download
+3. Open **Parlivo** from your Home Screen. Then go to ⚙︎ › **Offline languages** and download
    the languages you want while you're on Wi-Fi. Each one is about 230 MB, and voice input is another 80 MB.
 4. Turn on Airplane Mode and try it.
 
