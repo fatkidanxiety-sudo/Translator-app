@@ -25,13 +25,27 @@
     </button>
   </header>
 
+  <!-- Thin bar shown on every screen while languages download -->
+  <button class="dl-strip" id="dl-strip" hidden>
+    <span class="dl-strip-text" id="dl-strip-text">Downloading…</span>
+    <span class="dl-strip-bar"><span id="dl-strip-fill"></span></span>
+  </button>
+
   <main>
     <!-- ============ TRANSLATE ============ -->
     <section id="tab-translate" class="tab active" aria-label="Translate">
       <div class="card install-tip" id="install-tip" hidden>
-        <p><strong>Install this app:</strong> tap the Share button <span aria-hidden="true">⬆︎</span> in Safari, then <strong>Add to Home Screen</strong>. It then opens full-screen, like a regular app.</p>
+        <p><strong>Install Parlivo:</strong> tap Safari’s Share button <span aria-hidden="true">⬆︎</span>, then <strong>Add to Home Screen</strong>.</p>
         <button class="text-btn" id="install-tip-close">Got it</button>
       </div>
+
+      <div class="card hero" id="offline-hero" hidden>
+        <h2>Make Parlivo work offline</h2>
+        <p id="hero-text">Download all languages once, on Wi-Fi. Then everything works in airplane mode.</p>
+        <button class="btn primary wide" id="hero-download">Download for Offline</button>
+        <button class="text-btn" id="hero-choose">Choose languages instead</button>
+      </div>
+
       <div class="lang-bar">
         <button class="lang-btn" id="t-source"></button>
         <button class="swap-btn" id="t-swap" aria-label="Swap languages">
@@ -39,10 +53,9 @@
         </button>
         <button class="lang-btn" id="t-target"></button>
       </div>
-      <p class="detected" id="t-detected" hidden></p>
 
       <div class="card input-card">
-        <textarea id="t-input" placeholder="Enter text" rows="4" autocapitalize="sentences"></textarea>
+        <textarea id="t-input" placeholder="Type to translate" rows="3" autocapitalize="sentences" enterkeyhint="done"></textarea>
         <div class="row">
           <button class="mic-btn small" id="t-mic" aria-label="Speak">
             <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
@@ -51,20 +64,18 @@
             <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
           </button>
           <span class="spacer"></span>
-          <span class="count" id="t-count">0</span>
+          <span class="detected" id="t-detected"></span>
           <button class="icon-btn" id="t-clear" aria-label="Clear" hidden>
             <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
       </div>
 
-      <div class="download-card card" id="t-download" hidden>
-        <p id="t-download-text"></p>
+      <div class="card need-card" id="t-need" hidden>
+        <p id="t-need-text"></p>
         <div class="progress" hidden><div></div></div>
-        <button class="btn" id="t-download-btn">Download</button>
+        <button class="btn primary" id="t-need-btn">Download</button>
       </div>
-
-      <button class="btn primary wide" id="t-go">Translate</button>
 
       <div class="card output-card" id="t-output-card" hidden>
         <p class="out-lang" id="t-out-lang"></p>
@@ -118,24 +129,53 @@
         <span class="arrow">→</span>
         <button class="lang-btn" id="p-target"></button>
       </div>
+
+      <!-- Live viewfinder -->
+      <div class="viewfinder" id="p-live" hidden>
+        <video id="p-video" playsinline muted autoplay></video>
+        <div class="vf-hint">Point at text, then tap the shutter</div>
+        <div class="vf-controls">
+          <label class="vf-btn" aria-label="Choose photo">
+            <input type="file" accept="image/*" id="p-file-live">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/></svg>
+          </label>
+          <button class="shutter" id="p-shutter" aria-label="Take photo"><span></span></button>
+          <span class="vf-btn ghost"></span>
+        </div>
+      </div>
+
+      <!-- Result -->
       <div class="photo-wrap" id="p-photo" hidden>
         <img id="p-image" alt="Photo to translate">
         <div class="overlay" id="p-overlay"></div>
-        <div class="busy" id="p-busy" hidden><div class="spinner"></div><span id="p-busy-text">Finding text…</span><div class="progress"><div></div></div></div>
+        <div class="popup" id="p-popup" hidden></div>
+        <div class="busy" id="p-busy" hidden><div class="spinner"></div><span id="p-busy-text">Reading text…</span></div>
       </div>
-      <div class="empty" id="p-empty">
-        <div class="empty-icon">📷</div>
-        <h2>Translate text in photos</h2>
-        <p>Signs, menus, labels. Text is found and translated on your phone — nothing is uploaded.</p>
+      <div class="photo-tools" id="p-tools" hidden>
+        <div class="segmented" id="p-mode">
+          <button class="active" data-mode="auto">Auto</button>
+          <button data-mode="tap">Tap words</button>
+          <button data-mode="original">Original</button>
+        </div>
+        <p class="hint" id="p-hint"></p>
+        <div class="row">
+          <button class="btn wide" id="p-retake">Retake</button>
+          <label class="btn wide file-btn"><input type="file" accept="image/*" id="p-file-again">Choose Photo</label>
+        </div>
       </div>
-      <div class="segmented" id="p-toggle" hidden>
-        <button class="active" data-show="translated">Translation</button>
-        <button data-show="original">Original</button>
+
+      <!-- Fallback when the live camera isn't available -->
+      <div id="p-start" hidden>
+        <div class="empty">
+          <div class="empty-icon">📷</div>
+          <h2>Translate text in photos</h2>
+          <p>Signs, menus, labels. Text is read and translated on your phone — nothing is uploaded.</p>
+        </div>
+        <label class="btn primary wide file-btn">
+          <input type="file" accept="image/*" id="p-file">
+          Take or Choose Photo
+        </label>
       </div>
-      <label class="btn primary wide file-btn">
-        <input type="file" accept="image/*" id="p-file">
-        Take or Choose Photo
-      </label>
       <div class="card" id="p-lines" hidden></div>
     </section>
 
@@ -148,7 +188,11 @@
       <div id="ph-category" hidden>
         <button class="back" id="ph-back">‹ Phrasebook</button>
         <h2 id="ph-title"></h2>
-        <div class="progress" id="ph-progress" hidden><div></div></div>
+        <div class="card need-card" id="ph-need" hidden>
+          <p id="ph-need-text"></p>
+          <div class="progress" hidden><div></div></div>
+          <button class="btn primary" id="ph-need-btn">Download</button>
+        </div>
         <div class="list" id="ph-list"></div>
       </div>
     </section>
@@ -206,13 +250,12 @@
       <button class="text-btn" id="settings-close">Done</button>
     </div>
     <div class="sheet-body">
-      <h3>Offline languages</h3>
-      <p class="hint">Download languages while you’re on Wi-Fi. After that, translation works in airplane mode. Each language is about 230 MB (both directions with English).</p>
+      <h3>Offline</h3>
+      <div class="card dl-card" id="dl-card"></div>
       <p class="hint" id="storage-info"></p>
-      <div class="list" id="packs"></div>
 
-      <h3>Voice input</h3>
-      <div class="list" id="speech-pack"></div>
+      <h3>Languages</h3>
+      <div class="list" id="packs"></div>
 
       <h3>Speech</h3>
       <div class="list">
@@ -232,7 +275,7 @@
       <p class="hint">Everything runs on this device. Your text, voice and photos are never uploaded. History is stored only in this browser.</p>
 
       <h3>About Parlivo</h3>
-      <p class="hint">Translation: Opus-MT models (Helsinki-NLP, CC-BY 4.0) running with Transformers.js. Voice: OpenAI Whisper (base). Photos: Tesseract OCR. Voices: built into iOS.</p>
+      <p class="hint">Translation: Mozilla’s Firefox Translations models (MPL-2.0) on the Bergamot engine. Voice: OpenAI Whisper (base). Photos: Tesseract OCR. Voices: built into iOS.</p>
       <p class="hint" id="version"></p>
     </div>
   </dialog>

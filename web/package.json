@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "3.8.1",
+    "@mkljczk/bergamot-translator": "0.4.16",
     "franc": "6.2.0",
     "tesseract.js": "6.0.1"
   },

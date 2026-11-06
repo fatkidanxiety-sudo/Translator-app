@@ -5,7 +5,7 @@ Parlivo is a translator that works with **no internet connection**. There are tw
 | | **Web app** (`web/`, built into `docs/`) | **Native iPhone app** (`OfflineTranslator/`) |
 | --- | --- | --- |
 | Install | Open the website in Safari, then Share › **Add to Home Screen**. No Mac needed. | Build with Xcode on a Mac |
-| Translation | Opus-MT models running in the browser (27 languages, through English when needed) | Apple's on-device Translation framework |
+| Translation | Mozilla's Firefox Translations models on the Bergamot engine (26 languages) | Apple's on-device Translation framework |
 | Voice input | Whisper (base), running on the phone | Apple Speech, on-device |
 | Photos | Tesseract OCR | Apple Vision |
 
@@ -27,23 +27,34 @@ Parlivo is a translator that works with **no internet connection**. There are tw
 
 1. Open that link in **Safari**.
 2. Tap the **Share** button, then **Add to Home Screen**.
-3. Open **Parlivo** from your Home Screen. Then go to ⚙︎ › **Offline languages** and download
-   the languages you want while you're on Wi-Fi. Each one is about 230 MB, and voice input is another 80 MB.
+3. Open **Parlivo** from your Home Screen and tap **Download for Offline** (on Wi-Fi). That one button
+   downloads every language, voice input and camera reading — about 1.2 GB, a few minutes on home Wi-Fi.
+   You can keep using the app while it downloads. To download only some languages, use ⚙︎ › **Languages**
+   (about 30–75 MB each).
 4. Turn on Airplane Mode and try it.
 
 ### What works offline
 
-- **Translate:** type or speak, with automatic language detection, read-aloud, copy, share, and favorites.
+- **Translate:** translates as you type, or speak; automatic language detection, read-aloud, copy, share, and favorites.
 - **Conversation:** two mics, one per person, with spoken translations and a face-to-face mode
   that flips the top half of the screen for the person across from you.
-- **Camera:** take or pick a photo, and translations are laid over the text in the picture.
+- **Camera:** live viewfinder. Snap a photo and the language is detected automatically, with translations laid over
+  the text. If a photo is hard to read, switch to **Tap words** and tap any word to see its translation.
 - **Phrasebook:** 94 travel phrases in 8 categories, in any downloaded language.
 - **History and favorites:** stored only in this browser.
 
-Languages: Afrikaans, Arabic, Chinese, Czech, Danish, Dutch, English, Finnish, French, German, Hindi,
-Hungarian, Indonesian, Italian, Russian, Spanish, Swedish, Ukrainian, Vietnamese and Xhosa work in both
-directions. Japanese, Korean, Polish, Thai, Turkish and Estonian can only be translated *into* English
-(and from English onward to other languages). Romanian can only be translated *from* English.
+Languages (all directions, through English when needed): Arabic, Chinese (Simplified and Traditional), Czech,
+Dutch, English, French, German, Greek, Hebrew, Hindi, Indonesian, Italian, Japanese, Korean, Persian, Polish,
+Portuguese, Romanian, Russian, Spanish, Swedish, Thai, Turkish, Ukrainian and Vietnamese.
+
+### Where the models come from
+
+Translation uses Mozilla's Firefox Translations models (MPL-2.0), the same ones built into Firefox. Mozilla's
+servers don't allow other websites to download them, so a gzip-compressed copy lives on this repo's
+**`models`** branch (with `registry.json` listing every file, size and SHA-256 hash). The app downloads from
+`raw.githubusercontent.com`, unpacks and verifies each file, and keeps it in the browser's Cache Storage.
+Voice input uses Whisper (from Hugging Face) and camera reading uses Tesseract language data (from jsDelivr),
+both also cached on the device.
 
 ### Developing the web app
 

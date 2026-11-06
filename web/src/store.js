@@ -1,5 +1,7 @@
 // Small persistent stores kept in localStorage (history, settings, phrase cache).
 
+import { isSupported } from './languages.js';
+
 const read = (key, fallback) => {
   try {
     const raw = localStorage.getItem(key);
@@ -30,6 +32,10 @@ const DEFAULT_SETTINGS = {
 };
 
 export const settings = { ...DEFAULT_SETTINGS, ...read('settings', {}) };
+// Drop languages that this version no longer offers.
+for (const key of ['source', 'target', 'convA', 'convB', 'phraseLang']) {
+  if (settings[key] !== 'auto' && !isSupported(settings[key])) settings[key] = DEFAULT_SETTINGS[key];
+}
 export function saveSettings(patch) {
   Object.assign(settings, patch);
   write('settings', settings);
@@ -82,8 +88,8 @@ export function clearHistory({ keepFavorites }) {
 
 // ---- Phrasebook translations, cached per language so they load instantly offline ----
 export function getPhraseCache(code) {
-  return read(`phrases-${code}`, {});
+  return read(`phrases2-${code}`, {});
 }
 export function setPhraseCache(code, map) {
-  write(`phrases-${code}`, map);
+  write(`phrases2-${code}`, map);
 }

@@ -1,8 +1,10 @@
-import { LANGUAGES, lang, canTranslate, route, packFor, packDirections, modelSizeMB, SPEECH_MODEL_MB } from './languages.js';
-import * as engine from './engine.js';
+import { LANGUAGES, lang, PACK_CODES, packsFor, SPEECH_MODEL_MB } from './languages.js';
+import * as models from './models.js';
+import { translate, translateMany, warmUp } from './translate.js';
+import * as voice from './engine.js';
 import { detectLanguage } from './detect.js';
 import { Recorder, speak, stopSpeaking } from './speech.js';
-import { recognizeLines } from './ocr.js';
+import { autoRead, tesseractLangsFor, readText, prepareOcr } from './ocr.js';
 import { settings, saveSettings, getHistory, addHistory, updateHistory, deleteHistory, clearHistory, getPhraseCache, setPhraseCache } from './store.js';
 import { PHRASE_CATEGORIES } from './phrases.js';
 
@@ -10,12 +12,12 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const nameOf = (code) => (code === 'auto' ? 'Detect Language' : lang(code)?.name ?? code);
 const SORTED = [...LANGUAGES].sort((a, b) => a.name.localeCompare(b.name));
+const OCR_MB = 70;
 
 const ICON = {
   speaker: '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2Z"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></svg>',
-  copy: '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
   wave: '<svg viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 8v8M19 11v2"/></svg>',
@@ -35,19 +37,20 @@ function toast(message, ms = 2600) {
   toastTimer = setTimeout(() => el.classList.remove('show'), ms);
 }
 
-function setProgress(container, fraction) {
+function setBar(container, fraction) {
   const bar = container?.querySelector('.progress');
   if (!bar) return;
-  bar.hidden = false;
-  bar.firstElementChild.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+  bar.hidden = fraction === null;
+  if (fraction !== null) bar.firstElementChild.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
 }
 
-const mb = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)} GB` : `${Math.round(n)} MB`);
-
-function routeSizeMB(src, tgt) {
-  const pairs = route(src, tgt) ?? [];
-  return pairs.filter((p) => !status.pairs.has(p)).reduce((sum, p) => sum + modelSizeMB(p), 0);
+const fmtBytes = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(b / 1e6))} MB`);
+function fmtTime(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return '';
+  if (seconds < 60) return 'less than a minute left';
+  return `about ${Math.round(seconds / 60)} min left`;
 }
+const listNames = (codes) => codes.map(nameOf).join(' and ');
 
 async function copyText(text) {
   try {
@@ -60,38 +63,154 @@ async function copyText(text) {
 
 function friendlyError(error) {
   const message = error?.message ?? String(error);
-  if (/fetch|network|load/i.test(message) && !navigator.onLine) {
-    return 'This needs a one-time download. Connect to the internet, then try again.';
+  if (message === 'offline-not-downloaded' || (/fetch|network|load/i.test(message) && !navigator.onLine)) {
+    return 'This language isn’t downloaded yet. Connect to the internet once to download it.';
   }
   return message;
 }
 
-// Downloaded models (refreshed after every download).
-let status = { pairs: new Set(), speech: false };
-let statusLoaded = null;
-async function refreshStatus() {
-  try {
-    statusLoaded = engine.downloadedStatus();
-    status = await statusLoaded;
-  } catch {
-    /* Cache Storage unavailable (e.g. private browsing) */
+const pairReady = (src, tgt) => packsFor(src, tgt).every(models.isPackInstalled);
+const missingPacks = (codes) => [...new Set(codes)].filter((c) => c && c !== 'en' && !models.isPackInstalled(c));
+
+// ---------------------------------------------------------------------------
+// Downloads (one place for every screen)
+// ---------------------------------------------------------------------------
+
+let speechInstalled = localStorage.getItem('speechInstalled') === '1';
+let ocrReady = new Set(JSON.parse(localStorage.getItem('ocrReady') || '[]'));
+let bigJob = null; // { phase: 'languages' | 'voice' | 'camera', fraction }
+
+/** Downloads language packs for a screen, with progress shown in the strip (and optional callback). */
+async function ensurePacks(codes, onProgress) {
+  const missing = missingPacks(codes);
+  if (!missing.length) return true;
+  if (!navigator.onLine) {
+    toast(`${listNames(missing)} isn’t downloaded yet. Connect to the internet once to download it.`, 4000);
+    return false;
   }
-  updateTranslateBadge();
-  if ($('settings').open) renderPacks();
+  try {
+    await models.downloadPacks(missing, onProgress);
+    return true;
+  } catch (error) {
+    toast(friendlyError(error), 4000);
+    return false;
+  }
 }
+
+/** "Download for Offline": every language, voice input and camera text recognition. */
+async function downloadEverything() {
+  if (bigJob) return;
+  if (!navigator.onLine) {
+    toast('Connect to the internet (Wi-Fi is best) to download.');
+    return;
+  }
+  bigJob = { phase: 'languages', fraction: 0 };
+  renderDownloads();
+  try {
+    await models.downloadPacks(PACK_CODES);
+    if (!speechInstalled) {
+      bigJob = { phase: 'voice', fraction: 0 };
+      renderDownloads();
+      await voice.downloadSpeech((f) => {
+        bigJob.fraction = f;
+        renderDownloads();
+      });
+      markSpeechInstalled();
+    }
+    const ocrTodo = PACK_CODES.filter((c) => !ocrReady.has(c));
+    if (ocrTodo.length) {
+      bigJob = { phase: 'camera', fraction: 0 };
+      renderDownloads();
+      await prepareOcr(ocrTodo, (f) => {
+        bigJob.fraction = f;
+        renderDownloads();
+      });
+      ocrTodo.forEach((c) => ocrReady.add(c));
+      localStorage.setItem('ocrReady', JSON.stringify([...ocrReady]));
+    }
+    toast('All set — Parlivo now works fully offline ✓', 3500);
+  } catch (error) {
+    toast(friendlyError(error), 4500);
+  } finally {
+    bigJob = null;
+    renderDownloads();
+    renderStorage();
+  }
+}
+
+function markSpeechInstalled() {
+  speechInstalled = true;
+  localStorage.setItem('speechInstalled', '1');
+}
+
+function totalEverythingBytes(remainingOnly) {
+  let bytes = models.packBytes(PACK_CODES, remainingOnly);
+  if (!remainingOnly || !speechInstalled) bytes += SPEECH_MODEL_MB * 1e6;
+  if (!remainingOnly || PACK_CODES.some((c) => !ocrReady.has(c))) bytes += OCR_MB * 1e6;
+  return bytes;
+}
+
+const everythingReady = () => PACK_CODES.every(models.isPackInstalled) && speechInstalled && PACK_CODES.every((c) => ocrReady.has(c));
+
+/** Updates every piece of download UI: top strip, hero card, settings, screen cards. */
+function renderDownloads() {
+  const { downloading } = models.state();
+  const strip = $('dl-strip');
+  let text = null;
+  let fraction = 0;
+  if (downloading) {
+    const what = downloading.codes.length === 1 ? nameOf(downloading.codes[0]) : downloading.codes.length > 1 ? `${downloading.codes.length} languages` : 'language';
+    const left = downloading.bytesPerSecond ? (downloading.total - downloading.done) / downloading.bytesPerSecond : NaN;
+    text = `Downloading ${what} · ${Math.round(downloading.fraction * 100)}%${downloading.bytesPerSecond ? ` · ${fmtTime(left)}` : ''}`;
+    fraction = downloading.fraction;
+  } else if (bigJob?.phase === 'voice') {
+    text = `Downloading voice input · ${Math.round(bigJob.fraction * 100)}%`;
+    fraction = bigJob.fraction;
+  } else if (bigJob?.phase === 'camera') {
+    text = `Preparing camera text reading · ${Math.round(bigJob.fraction * 100)}%`;
+    fraction = bigJob.fraction;
+  }
+  strip.hidden = !text;
+  if (text) {
+    $('dl-strip-text').textContent = text;
+    $('dl-strip-fill').style.width = `${Math.round(fraction * 100)}%`;
+  }
+
+  // First-run hero on the Translate screen
+  const nothingYet = models.installedPacks().length === 0;
+  $('offline-hero').hidden = !(nothingYet && !text && !localStorage.getItem('heroDismissed'));
+  $('hero-text').textContent = `Download every language (${PACK_CODES.length + 1}), voice input and camera reading once — about ${fmtBytes(totalEverythingBytes(false))}. Wi-Fi recommended.`;
+
+  if ($('settings').open) {
+    renderDlCard(text, fraction);
+    renderPacks();
+  }
+  updateTranslateUI();
+  updatePhraseNeed();
+}
+
+models.onChange(() => renderDownloads());
+$('dl-strip').addEventListener('click', () => openSettings());
+$('hero-download').addEventListener('click', () => downloadEverything());
+$('hero-choose').addEventListener('click', () => openSettings());
 
 // ---------------------------------------------------------------------------
 // Tabs
 // ---------------------------------------------------------------------------
 
 const TITLES = { translate: 'Translate', talk: 'Conversation', camera: 'Camera', phrases: 'Phrasebook', history: 'History' };
+let currentTab = 'translate';
 
 function showTab(name) {
+  if (name === currentTab) return;
+  if (currentTab === 'translate') commitTranslation();
+  if (currentTab === 'camera') stopCamera();
+  currentTab = name;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === `tab-${name}`));
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   $('page-title').textContent = TITLES[name];
   if (name === 'history') renderHistory();
-  if (name === 'camera') renderCameraLangs();
+  if (name === 'camera') enterCamera();
   window.scrollTo({ top: 0 });
 }
 $('tabbar').addEventListener('click', (e) => {
@@ -116,7 +235,7 @@ function pickLanguage(options) {
 }
 
 function renderPicker() {
-  const { current, allowAuto, unavailableReason } = pickerOptions;
+  const { current, allowAuto } = pickerOptions;
   const query = $('picker-search').value.trim().toLowerCase();
   const rows = [];
   if (allowAuto && !query) {
@@ -124,11 +243,10 @@ function renderPicker() {
   }
   for (const l of SORTED) {
     if (query && !l.name.toLowerCase().includes(query) && !l.native.toLowerCase().includes(query)) continue;
-    const reason = unavailableReason?.(l.code);
-    const ready = l.code === 'en' || packFor(l.code).every((p) => status.pairs.has(p));
-    rows.push(`<button class="list-row${reason ? ' disabled' : ''}" data-code="${l.code}" ${reason ? 'disabled' : ''}>
-      <span class="main">${esc(l.name)}<div class="sub">${esc(reason ?? l.native)}</div></span>
-      ${ready && l.code !== 'en' ? '<span class="pill ok">Offline</span>' : ''}
+    const ready = models.isPackInstalled(l.code);
+    rows.push(`<button class="list-row" data-code="${l.code}">
+      <span class="main">${esc(l.name)}<div class="sub">${esc(l.native)}</div></span>
+      ${ready ? '<span class="pill ok">Offline</span>' : ''}
       ${current === l.code ? '<span class="check">✓</span>' : ''}
     </button>`);
   }
@@ -145,192 +263,145 @@ $('picker-close').addEventListener('click', () => closePicker(null));
 $('picker').addEventListener('cancel', () => closePicker(null));
 $('picker-list').addEventListener('click', (e) => {
   const row = e.target.closest('[data-code]');
-  if (row && !row.disabled) closePicker(row.dataset.code);
+  if (row) closePicker(row.dataset.code);
 });
 
 // ---------------------------------------------------------------------------
-// Translate tab
+// Translate tab — translates as you type
 // ---------------------------------------------------------------------------
 
 const input = $('t-input');
 let detected = null;
-let lastResult = null; // { source, translation, from, to, input, entryId }
-let translating = false;
+let lastResult = null; // { source, translation, from, to, entryId, saved }
+let liveSeq = 0;
+let liveTimer = null;
+let saveTimer = null;
+let pendingTimer = null;
 
-function renderTranslateLangs() {
-  $('t-source').textContent = nameOf(settings.source);
-  $('t-target').textContent = nameOf(settings.target);
-  $('t-swap').disabled = settings.source === 'auto' && !detected;
-  const det = $('t-detected');
-  det.hidden = !(settings.source === 'auto' && detected);
-  det.textContent = detected ? `${nameOf(detected)} detected` : '';
-  updateTranslateBadge();
-}
-
-function updateTranslateBadge() {
-  const badge = $('t-badge');
-  const src = settings.source === 'auto' ? detected : settings.source;
-  const tgt = settings.target;
-  badge.className = 'badge';
-  if (!src) {
-    badge.textContent = '';
-    return;
-  }
-  if (!canTranslate(src, tgt)) {
-    badge.textContent = `⚠︎ ${nameOf(src)} → ${nameOf(tgt)} isn’t available. Try English.`;
-    badge.classList.add('bad');
-  } else if (engine.isPairReady(status, src, tgt)) {
-    badge.textContent = '✓ Works offline';
-    badge.classList.add('ok');
-  } else {
-    badge.textContent = `⬇︎ One-time download needed (about ${mb(routeSizeMB(src, tgt))}). Happens automatically when you translate.`;
-    badge.classList.add('warn');
-  }
-}
-
-function updateInputUI() {
-  $('t-count').textContent = input.value.length;
-  $('t-clear').hidden = !input.value;
-  $('t-go').disabled = !input.value.trim() || translating;
-  $('t-output').classList.toggle('stale', Boolean(lastResult) && input.value !== lastResult.input);
-}
-
-function resetOutput() {
-  lastResult = null;
-  $('t-output-card').hidden = true;
-}
-
-input.addEventListener('input', updateInputUI);
-
-$('t-source').addEventListener('click', async () => {
-  const code = await pickLanguage({ title: 'Translate From', current: settings.source, allowAuto: true });
-  if (!code) return;
-  saveSettings({ source: code });
-  detected = null;
-  if (code !== 'auto' && !canTranslate(code, settings.target)) {
-    saveSettings({ target: code === 'en' ? 'es' : 'en' });
-    toast(`Switched to ${nameOf(settings.target)} — ${nameOf(code)} can’t go to that language offline.`);
-  }
-  resetOutput();
-  renderTranslateLangs();
-});
-
-$('t-target').addEventListener('click', async () => {
-  const src = settings.source === 'auto' ? detected : settings.source;
-  const code = await pickLanguage({
-    title: 'Translate To',
-    current: settings.target,
-    unavailableReason: (c) => (src && c !== src && !canTranslate(src, c) ? `Not available from ${nameOf(src)}` : null),
-  });
-  if (!code) return;
-  saveSettings({ target: code });
-  resetOutput();
-  renderTranslateLangs();
-});
-
-$('t-swap').addEventListener('click', () => {
-  const from = settings.source === 'auto' ? detected : settings.source;
-  if (!from) return;
-  if (!canTranslate(settings.target, from)) {
-    toast(`${nameOf(settings.target)} → ${nameOf(from)} isn’t available offline.`);
-    return;
-  }
-  const previousOutput = lastResult?.translation;
-  saveSettings({ source: settings.target, target: from });
-  detected = null;
-  if (previousOutput) input.value = previousOutput;
-  resetOutput();
-  renderTranslateLangs();
-  updateInputUI();
-});
-
-$('t-clear').addEventListener('click', () => {
-  input.value = '';
-  resetOutput();
-  if (settings.source === 'auto') detected = null;
-  renderTranslateLangs();
-  updateInputUI();
-  input.focus();
-});
-
-$('t-paste').addEventListener('click', async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    if (text) {
-      input.value = text;
-      updateInputUI();
-    }
-  } catch {
-    toast('Long-press in the text box and choose Paste.');
-  }
-});
-
-async function runTranslate(origin = 'text') {
+function currentPair() {
   const text = input.value.trim();
-  if (!text || translating) return;
-  input.blur();
-
   let src = settings.source;
-  if (src === 'auto') {
-    src = detectLanguage(text);
-    if (!src) {
-      toast('Couldn’t tell which language this is. Tap the left button to choose it.', 3500);
-      return;
-    }
-    detected = src;
-    renderTranslateLangs();
-  }
+  if (src === 'auto') src = detected;
+  if (!src) return null;
   let tgt = settings.target;
   // Typed in the target language with "Detect Language" on: translate the other way.
   if (settings.source === 'auto' && src === tgt) tgt = tgt === 'en' ? (settings.lastOther ?? 'es') : 'en';
+  return text ? { src, tgt } : { src, tgt };
+}
+
+function renderTranslateLangs() {
+  $('t-source').textContent = settings.source === 'auto' && detected ? `${nameOf(detected)} ✨` : nameOf(settings.source);
+  $('t-target').textContent = nameOf(settings.target);
+  $('t-swap').disabled = settings.source === 'auto' && !detected;
+  updateTranslateUI();
+}
+
+function updateTranslateUI() {
+  const hasText = Boolean(input.value);
+  $('t-clear').hidden = !hasText;
+  $('t-detected').textContent = settings.source === 'auto' && hasText && !detected ? 'Can’t tell the language yet' : '';
+
+  const pair = currentPair();
+  const badge = $('t-badge');
+  const need = $('t-need');
+  badge.className = 'badge';
+  badge.textContent = '';
+  need.hidden = true;
+  if (!pair) return;
+  const missing = missingPacks([pair.src, pair.tgt]);
+  const { downloading } = models.state();
+  if (!missing.length) {
+    badge.textContent = '✓ Works offline';
+    badge.classList.add('ok');
+    return;
+  }
+  // Show what's needed, with live progress if it's already downloading.
+  need.hidden = false;
+  const busy = downloading && missing.every((c) => downloading.codes.includes(c) || bigJob);
+  $('t-need-text').textContent = busy
+    ? `Downloading ${listNames(missing)} for offline use…`
+    : `${listNames(missing)} isn’t on this phone yet (${fmtBytes(models.packBytes(missing, true))}).`;
+  $('t-need-btn').hidden = Boolean(busy);
+  setBar(need, busy ? downloading.fraction : null);
+}
+
+$('t-need-btn').addEventListener('click', async () => {
+  const pair = currentPair();
+  if (!pair) return;
+  if (await ensurePacks([pair.src, pair.tgt])) liveTranslate();
+});
+
+function scheduleLive(delay = 180) {
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => liveTranslate(), delay);
+}
+
+input.addEventListener('input', () => {
+  if (settings.source === 'auto') detected = detectLanguage(input.value);
+  renderTranslateLangs();
+  if (lastResult) $('t-output').classList.add('pending');
+  scheduleLive();
+});
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    input.blur();
+  }
+});
+input.addEventListener('blur', () => commitTranslation({ speakIt: settings.autoSpeak }));
+
+async function liveTranslate({ origin = 'text', commit = false } = {}) {
+  const seq = ++liveSeq;
+  const text = input.value.trim();
+  clearTimeout(pendingTimer);
+  if (!text) {
+    lastResult = null;
+    $('t-output-card').hidden = true;
+    updateTranslateUI();
+    return;
+  }
+  if (settings.source === 'auto') detected = detectLanguage(text);
+  renderTranslateLangs();
+  const pair = currentPair();
+  if (!pair) return;
+  const { src, tgt } = pair;
   if (tgt !== 'en') saveSettings({ lastOther: tgt });
-  if (!canTranslate(src, tgt)) {
-    toast(`${nameOf(src)} → ${nameOf(tgt)} isn’t available offline. Try English.`, 3500);
-    return;
-  }
-  let ready = engine.isPairReady(status, src, tgt);
-  if (!ready) {
-    await refreshStatus();
-    ready = engine.isPairReady(status, src, tgt);
-  }
-  if (!ready && !navigator.onLine) {
-    toast(`${nameOf(src)} → ${nameOf(tgt)} hasn’t been downloaded yet. Connect to the internet once to download it.`, 4000);
+
+  const missing = missingPacks([src, tgt]);
+  if (missing.length) {
+    // Start the download right away when online; the card shows progress.
+    if (navigator.onLine && !models.state().downloading) {
+      ensurePacks(missing).then((ok) => ok && seq === liveSeq && liveTranslate({ origin, commit }));
+    }
     return;
   }
 
-  translating = true;
-  const go = $('t-go');
-  go.textContent = ready ? 'Translating…' : 'Downloading…';
-  updateInputUI();
-  const card = $('t-download');
-  card.hidden = ready;
-  $('t-download-text').textContent = `Downloading ${nameOf(src)} → ${nameOf(tgt)} for offline use…`;
-  $('t-download-btn').hidden = true;
-  setProgress(card, 0);
-
+  pendingTimer = setTimeout(() => $('t-output').classList.add('pending'), 250);
   try {
-    const translation = await engine.translate(
-      text,
-      src,
-      tgt,
-      engine.progressTracker((fraction) => {
-        setProgress(card, fraction);
-        if (fraction >= 0.999) go.textContent = 'Translating…';
-      }),
-    );
-    const entry = settings.saveHistory ? addHistory({ source: text, translation, from: src, to: tgt, origin }) : null;
-    lastResult = { source: text, translation, from: src, to: tgt, input: input.value, entryId: entry?.id ?? null };
+    const translation = await translate(text, src, tgt);
+    if (seq !== liveSeq) return; // a newer keystroke won
+    clearTimeout(pendingTimer);
+    lastResult = { source: text, translation, from: src, to: tgt, entryId: null, saved: false };
     showOutput();
-    if (settings.autoSpeak) speak(translation, tgt, settings.speechRate);
-    if (!ready) refreshStatus();
+    clearTimeout(saveTimer);
+    if (commit) commitTranslation({ origin, speakIt: settings.autoSpeak || origin === 'voice' });
+    else saveTimer = setTimeout(() => commitTranslation({ origin }), 2500);
   } catch (error) {
-    toast(friendlyError(error), 4000);
-  } finally {
-    translating = false;
-    card.hidden = true;
-    go.textContent = 'Translate';
-    updateInputUI();
+    if (seq === liveSeq) toast(friendlyError(error), 3500);
   }
+}
+
+/** Saves the current result to history (once) and optionally reads it aloud. */
+function commitTranslation({ origin = 'text', speakIt = false } = {}) {
+  clearTimeout(saveTimer);
+  if (!lastResult || lastResult.source !== input.value.trim()) return;
+  if (!lastResult.saved && settings.saveHistory) {
+    const entry = addHistory({ source: lastResult.source, translation: lastResult.translation, from: lastResult.from, to: lastResult.to, origin });
+    lastResult.entryId = entry.id;
+  }
+  lastResult.saved = true;
+  if (speakIt) speak(lastResult.translation, lastResult.to, settings.speechRate);
+  showOutput();
 }
 
 function showOutput() {
@@ -340,15 +411,63 @@ function showOutput() {
   const out = $('t-output');
   out.textContent = lastResult.translation;
   out.dir = lang(lastResult.to)?.rtl ? 'rtl' : 'auto';
+  out.classList.remove('pending');
   const fav = lastResult.entryId && getHistory().find((h) => h.id === lastResult.entryId)?.favorite;
   $('t-fav').classList.toggle('on', Boolean(fav));
-  updateInputUI();
 }
 
-$('t-go').addEventListener('click', () => runTranslate('text'));
-input.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runTranslate('text');
+$('t-source').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'Translate From', current: settings.source, allowAuto: true });
+  if (!code) return;
+  saveSettings({ source: code });
+  detected = code === 'auto' ? detectLanguage(input.value) : null;
+  renderTranslateLangs();
+  liveTranslate();
 });
+
+$('t-target').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'Translate To', current: settings.target });
+  if (!code) return;
+  saveSettings({ target: code });
+  renderTranslateLangs();
+  liveTranslate();
+});
+
+$('t-swap').addEventListener('click', () => {
+  const pair = currentPair();
+  if (!pair) return;
+  const previous = lastResult?.translation;
+  saveSettings({ source: pair.tgt, target: pair.src });
+  detected = null;
+  if (previous) input.value = previous;
+  renderTranslateLangs();
+  liveTranslate();
+});
+
+$('t-clear').addEventListener('click', () => {
+  commitTranslation();
+  input.value = '';
+  lastResult = null;
+  if (settings.source === 'auto') detected = null;
+  $('t-output-card').hidden = true;
+  renderTranslateLangs();
+  input.focus();
+});
+
+$('t-paste').addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) {
+      input.value = text;
+      if (settings.source === 'auto') detected = detectLanguage(text);
+      renderTranslateLangs();
+      liveTranslate({ commit: true });
+    }
+  } catch {
+    toast('Long-press in the text box and choose Paste.');
+  }
+});
+
 $('t-speak').addEventListener('click', () => lastResult && speak(lastResult.translation, lastResult.to, settings.speechRate));
 $('t-copy').addEventListener('click', () => lastResult && copyText(lastResult.translation));
 $('t-share').addEventListener('click', async () => {
@@ -359,18 +478,17 @@ $('t-share').addEventListener('click', async () => {
     } catch {
       /* cancelled */
     }
-  } else {
-    copyText(lastResult.translation);
-  }
+  } else copyText(lastResult.translation);
 });
 $('t-fav').addEventListener('click', () => {
   if (!lastResult) return;
-  let entry = lastResult.entryId ? getHistory().find((h) => h.id === lastResult.entryId) : null;
-  if (entry) {
-    updateHistory(entry.id, { favorite: !entry.favorite });
-  } else {
-    entry = addHistory({ source: lastResult.source, translation: lastResult.translation, from: lastResult.from, to: lastResult.to, origin: 'text', favorite: true });
+  if (!lastResult.entryId) {
+    const entry = addHistory({ source: lastResult.source, translation: lastResult.translation, from: lastResult.from, to: lastResult.to, origin: 'text', favorite: true });
     lastResult.entryId = entry.id;
+    lastResult.saved = true;
+  } else {
+    const entry = getHistory().find((h) => h.id === lastResult.entryId);
+    if (entry) updateHistory(entry.id, { favorite: !entry.favorite });
   }
   showOutput();
   toast(getHistory().find((h) => h.id === lastResult.entryId)?.favorite ? 'Added to Favorites' : 'Removed from Favorites');
@@ -379,22 +497,19 @@ $('t-fav').addEventListener('click', () => {
 // ---- Voice input (on-device Whisper) ----
 
 const recorder = new Recorder();
-let micOwner = null; // which button is recording: 'translate' | 'a' | 'b'
+let micOwner = null; // 'translate' | 'a' | 'b'
 
-/** Makes sure the speech model is available, asking before the first download. */
 async function ensureSpeechModel() {
-  if (!status.speech) await refreshStatus();
-  if (status.speech) return true;
+  if (speechInstalled) return true;
   if (!navigator.onLine) {
     toast('Voice input needs a one-time download. Connect to the internet once, then it works offline.', 4000);
     return false;
   }
-  if (!confirm(`Voice input needs a one-time download (about ${SPEECH_MODEL_MB} MB). After that it works offline. Download now?`)) return false;
-  toast('Downloading voice model…', 60000);
+  toast('Downloading voice input (one time)…', 60000);
   try {
-    await engine.downloadSpeech(engine.progressTracker((f) => ($('toast').textContent = `Downloading voice model… ${Math.round(f * 100)}%`)));
+    await voice.downloadSpeech((f) => ($('toast').textContent = `Downloading voice input… ${Math.round(f * 100)}%`));
+    markSpeechInstalled();
     toast('Voice input is ready');
-    await refreshStatus();
     return true;
   } catch (error) {
     toast(friendlyError(error), 4000);
@@ -415,12 +530,11 @@ async function startRecording(owner) {
   }
 }
 
-/** Stops recording and returns the recognized text ('' if nothing). */
 async function finishRecording(languageCode) {
   micOwner = null;
   const audio = await recorder.stop();
   if (!audio || audio.length < 1600) return '';
-  return engine.transcribe(audio, languageCode);
+  return voice.transcribe(audio, languageCode);
 }
 
 function setMicState(button, state) {
@@ -435,35 +549,31 @@ $('t-mic').addEventListener('click', async () => {
   if (micOwner === 'translate') {
     setMicState(button, 'working');
     try {
-      const listenLang = settings.source === 'auto' ? null : settings.source;
-      const text = await finishRecording(listenLang);
+      const text = await finishRecording(settings.source === 'auto' ? null : settings.source);
       if (text) {
         input.value = text;
-        updateInputUI();
-        if (settings.source === 'auto') detected = null;
-        await runTranslate('voice');
-      } else {
-        toast('Didn’t catch that. Try again.');
-      }
+        if (settings.source === 'auto') detected = detectLanguage(text);
+        renderTranslateLangs();
+        await liveTranslate({ origin: 'voice', commit: true });
+      } else toast('Didn’t catch that. Try again.');
     } catch (error) {
       toast(friendlyError(error), 4000);
     } finally {
       setMicState(button, 'idle');
+      input.placeholder = 'Type to translate';
     }
     return;
   }
   if (micOwner) return;
   if (await startRecording('translate')) {
     setMicState(button, 'recording');
-    resetOutput();
     input.value = '';
     input.placeholder = 'Listening… tap ■ when done';
-    updateInputUI();
+    lastResult = null;
+    $('t-output-card').hidden = true;
+    renderTranslateLangs();
   }
 });
-new MutationObserver(() => {
-  if (!$('t-mic').classList.contains('recording')) input.placeholder = 'Enter text';
-}).observe($('t-mic'), { attributes: true, attributeFilter: ['class'] });
 
 // ---------------------------------------------------------------------------
 // Conversation tab
@@ -472,10 +582,7 @@ new MutationObserver(() => {
 const messages = [];
 let facing = false;
 let convBusy = false;
-
-function sideLang(side) {
-  return side === 'a' ? settings.convA : settings.convB;
-}
+const sideLang = (side) => (side === 'a' ? settings.convA : settings.convB);
 
 function renderTalkSides() {
   document.querySelectorAll('#tab-talk .talk-side').forEach((el) => {
@@ -531,23 +638,17 @@ $('tab-talk').addEventListener('click', async (e) => {
     speak(m.translated, m.to, settings.speechRate);
     return;
   }
-
   const pick = e.target.closest('[data-pick]');
   if (pick && !micOwner) {
     const side = pick.dataset.pick;
-    const other = side === 'a' ? settings.convB : settings.convA;
-    const code = await pickLanguage({
-      title: side === 'a' ? 'Your Language' : 'Their Language',
-      current: sideLang(side),
-      unavailableReason: (c) => (c !== other && (!canTranslate(c, other) || !canTranslate(other, c)) ? `Can’t go both ways with ${nameOf(other)}` : null),
-    });
+    const code = await pickLanguage({ title: side === 'a' ? 'Your Language' : 'Their Language', current: sideLang(side) });
     if (code) {
       saveSettings(side === 'a' ? { convA: code } : { convB: code });
       renderTalkSides();
+      warmUp(settings.convA, settings.convB);
     }
     return;
   }
-
   const mic = e.target.closest('[data-mic]');
   if (!mic || convBusy) return;
   const side = mic.dataset.mic;
@@ -559,10 +660,9 @@ $('tab-talk').addEventListener('click', async (e) => {
       const from = sideLang(side);
       const to = sideLang(side === 'a' ? 'b' : 'a');
       const heard = await finishRecording(from);
-      if (!heard) {
-        toast('Didn’t catch that. Try again.');
-      } else {
-        const translated = await engine.translate(heard, from, to);
+      if (!heard) toast('Didn’t catch that. Try again.');
+      else {
+        const translated = await translate(heard, from, to);
         messages.push({ side, original: heard, translated, from, to });
         if (settings.convAutoSpeak) speak(translated, to, settings.speechRate);
         if (settings.saveHistory) addHistory({ source: heard, translation: translated, from, to, origin: 'conversation' });
@@ -578,6 +678,7 @@ $('tab-talk').addEventListener('click', async (e) => {
     return;
   }
   if (micOwner) return;
+  if (!(await ensurePacks([settings.convA, settings.convB]))) return;
   if (await startRecording(side)) {
     document.querySelectorAll(`[data-mic="${side}"]`).forEach((b) => setMicState(b, 'recording'));
     renderTranscript();
@@ -596,57 +697,93 @@ $('c-clear').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Camera tab
+// Camera tab — live viewfinder, auto translation, or tap the words
 // ---------------------------------------------------------------------------
 
-let photo = null; // { canvas, lines: [{text, bbox, translated}], src, tgt }
+let stream = null;
+let photo = null; // { canvas, lines, src, tgt, mode }
+let photoRun = 0;
 
 function renderCameraLangs() {
   $('p-source').textContent = nameOf(settings.source);
   $('p-target').textContent = nameOf(settings.target);
 }
 
-$('p-source').addEventListener('click', async () => {
-  const code = await pickLanguage({ title: 'Text in Photo Is', current: settings.source, allowAuto: true });
-  if (!code) return;
-  saveSettings({ source: code });
-  if (code !== 'auto' && !canTranslate(code, settings.target)) saveSettings({ target: code === 'en' ? 'es' : 'en' });
-  detected = null;
+async function enterCamera() {
   renderCameraLangs();
-  renderTranslateLangs();
-  if (photo) processPhoto();
-});
+  if (photo) return;
+  await startCamera();
+}
 
-$('p-target').addEventListener('click', async () => {
-  const src = settings.source === 'auto' ? null : settings.source;
-  const code = await pickLanguage({
-    title: 'Translate To',
-    current: settings.target,
-    unavailableReason: (c) => (src && c !== src && !canTranslate(src, c) ? `Not available from ${nameOf(src)}` : null),
-  });
-  if (!code) return;
-  saveSettings({ target: code });
-  renderCameraLangs();
-  renderTranslateLangs();
-  if (photo) processPhoto();
-});
-
-$('p-file').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
-  try {
-    const canvas = await fileToCanvas(file, 2000);
-    photo = { canvas, lines: [] };
-    const img = $('p-image');
-    img.src = canvas.toDataURL('image/jpeg', 0.9);
-    await img.decode?.().catch(() => {});
-    $('p-photo').hidden = false;
-    $('p-empty').hidden = true;
-    processPhoto();
-  } catch {
-    toast('Couldn’t open that photo.');
+async function startCamera() {
+  $('p-photo').hidden = true;
+  $('p-tools').hidden = true;
+  $('p-lines').hidden = true;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showCameraFallback();
+    return;
   }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+      audio: false,
+    });
+    if (currentTab !== 'camera' || photo) {
+      stopCamera();
+      return;
+    }
+    const video = $('p-video');
+    video.srcObject = stream;
+    await video.play().catch(() => {});
+    $('p-live').hidden = false;
+    $('p-start').hidden = true;
+  } catch {
+    showCameraFallback();
+  }
+}
+
+function showCameraFallback() {
+  $('p-live').hidden = true;
+  $('p-start').hidden = Boolean(photo);
+}
+
+function stopCamera() {
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  $('p-live').hidden = true;
+}
+
+$('p-shutter').addEventListener('click', () => {
+  const video = $('p-video');
+  if (!video.videoWidth) return;
+  const scale = Math.min(1, 1800 / Math.max(video.videoWidth, video.videoHeight));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(video.videoWidth * scale);
+  canvas.height = Math.round(video.videoHeight * scale);
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  stopCamera();
+  showPhoto(canvas);
+});
+
+for (const id of ['p-file', 'p-file-live', 'p-file-again']) {
+  $(id).addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      stopCamera();
+      showPhoto(await fileToCanvas(file, 1800));
+    } catch {
+      toast('Couldn’t open that photo.');
+    }
+  });
+}
+
+$('p-retake').addEventListener('click', () => {
+  photo = null;
+  photoRun++;
+  $('p-popup').hidden = true;
+  startCamera();
 });
 
 async function fileToCanvas(file, maxSide) {
@@ -666,65 +803,97 @@ async function fileToCanvas(file, maxSide) {
   }
 }
 
-let photoRun = 0;
+async function showPhoto(canvas) {
+  photo = { canvas, lines: [], mode: 'auto' };
+  const img = $('p-image');
+  img.src = canvas.toDataURL('image/jpeg', 0.88);
+  await img.decode?.().catch(() => {});
+  $('p-photo').hidden = false;
+  $('p-tools').hidden = false;
+  $('p-start').hidden = true;
+  $('p-overlay').innerHTML = '';
+  $('p-popup').hidden = true;
+  processPhoto();
+}
+
+function setPhotoMode(mode) {
+  if (!photo) return;
+  photo.mode = mode;
+  $('p-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  const overlay = $('p-overlay');
+  overlay.classList.toggle('tap', mode === 'tap');
+  overlay.classList.toggle('hide', mode === 'original');
+  $('p-popup').hidden = true;
+  $('p-hint').textContent = mode === 'tap' ? 'Tap any word to see its translation.' : mode === 'auto' ? 'Hard to read? Switch to “Tap words”.' : '';
+}
+
+$('p-mode').addEventListener('click', (e) => {
+  const button = e.target.closest('button[data-mode]');
+  if (button) setPhotoMode(button.dataset.mode);
+});
+
 async function processPhoto() {
   if (!photo) return;
   const run = ++photoRun;
+  const current = photo;
   const busy = $('p-busy');
   busy.hidden = false;
-  $('p-overlay').innerHTML = '';
   $('p-lines').hidden = true;
-  $('p-toggle').hidden = true;
-  const setBusy = (text, fraction) => {
-    $('p-busy-text').textContent = text;
-    const bar = busy.querySelector('.progress');
-    bar.hidden = fraction === undefined;
-    if (fraction !== undefined) bar.firstElementChild.style.width = `${Math.round(fraction * 100)}%`;
-  };
+  const status = (t) => run === photoRun && ($('p-busy-text').textContent = t);
 
   try {
-    setBusy('Finding text…', 0);
-    const lines = await recognizeLines(photo.canvas, settings.source, (p, s) => {
-      if (run === photoRun) setBusy(/load|download/i.test(s) ? 'Preparing text recognition…' : 'Finding text…', p);
-    });
+    status('Reading text…');
+    const preferred = [settings.target, settings.lastOther, ...models.installedPacks()].filter(Boolean);
+    let { lines, confidence, script, pass } =
+      settings.source === 'auto'
+        ? await autoRead(current.canvas, preferred, status)
+        : await readText(current.canvas, tesseractLangsFor(settings.source), (p, s) => /load/i.test(s) && status('Preparing text reading…'));
     if (run !== photoRun) return;
+    // A mixed-language pass found the language: read once more with just that language for accuracy.
+    if (settings.source === 'auto' && pass && lines.length) {
+      const guess = detectLanguage(lines.map((l) => l.text).join(' '));
+      if (guess && lang(guess)?.tess && !(pass.length === 1 && pass[0] === lang(guess).tess)) {
+        const again = await readText(current.canvas, tesseractLangsFor(guess));
+        if (run !== photoRun) return;
+        if (again.confidence >= confidence - 5 && again.lines.length) ({ lines, confidence } = again);
+      }
+    }
     if (!lines.length) {
       busy.hidden = true;
-      toast(settings.source === 'auto' ? 'No text found. For Japanese, Chinese, Korean, Arabic and similar, pick the language first.' : 'No text found in this photo.', 4500);
+      $('p-hint').textContent = 'No text found. Get a little closer, hold steady, and try again.';
       return;
     }
 
     let src = settings.source;
     if (src === 'auto') {
-      src = detectLanguage(lines.map((l) => l.text).join(' '));
-      if (!src) throw new Error('Couldn’t tell which language the text is in. Choose it with the left button.');
-      detected = src;
-      renderTranslateLangs();
+      src = detectLanguage(lines.map((l) => l.text).join(' ')) ?? (script === 'Latin' || !script ? 'en' : null);
+      if (!src) throw new Error('Couldn’t tell which language this is. Choose it with the left button.');
     }
-    const tgt = settings.target;
-    if (!canTranslate(src, tgt)) throw new Error(`${nameOf(src)} → ${nameOf(tgt)} isn’t available offline.`);
-    if (!engine.isPairReady(status, src, tgt)) await refreshStatus();
-    if (!engine.isPairReady(status, src, tgt) && !navigator.onLine) {
-      throw new Error(`${nameOf(src)} → ${nameOf(tgt)} hasn’t been downloaded yet.`);
-    }
+    let tgt = settings.target;
+    if (src === tgt) tgt = tgt === 'en' ? (settings.lastOther ?? 'es') : 'en';
+    current.src = src;
+    current.tgt = tgt;
+    $('p-source').textContent = settings.source === 'auto' ? `${nameOf(src)} ✨` : nameOf(src);
 
-    setBusy('Translating…');
-    const joined = lines.map((l) => l.text).join('\n');
-    const translated = await engine.translate(
-      joined,
-      src,
-      tgt,
-      engine.progressTracker((f) => run === photoRun && setBusy('Downloading language…', f)),
-    );
+    if (missingPacks([src, tgt]).length) {
+      status(`Downloading ${listNames(missingPacks([src, tgt]))}…`);
+      if (!(await ensurePacks([src, tgt]))) {
+        busy.hidden = true;
+        return;
+      }
+    }
+    status('Translating…');
+    const translated = await translateMany(lines.map((l) => l.text), src, tgt);
     if (run !== photoRun) return;
-    const parts = translated.split('\n');
-    photo.lines = lines.map((l, i) => ({ ...l, translated: parts[i] ?? '' }));
-    photo.src = src;
-    photo.tgt = tgt;
+    current.lines = lines.map((l, i) => ({ ...l, translated: translated[i] ?? '' }));
     drawOverlay();
     renderPhotoLines();
-    if (settings.saveHistory) addHistory({ source: joined, translation: translated, from: src, to: tgt, origin: 'camera' });
-    refreshStatus();
+    // Low confidence: let the person tap words instead of covering the photo with guesses.
+    setPhotoMode(confidence < 62 ? 'tap' : 'auto');
+    if (confidence < 62) $('p-hint').textContent = 'This photo is hard to read — tap the words you want translated.';
+    if (settings.saveHistory) {
+      addHistory({ source: lines.map((l) => l.text).join('\n'), translation: current.lines.map((l) => l.translated).join('\n'), from: src, to: tgt, origin: 'camera' });
+    }
   } catch (error) {
     if (run === photoRun) toast(friendlyError(error), 4500);
   } finally {
@@ -737,30 +906,66 @@ function drawOverlay() {
   const img = $('p-image');
   if (!photo?.lines.length) return;
   const scale = img.clientWidth / photo.canvas.width;
-  overlay.innerHTML = photo.lines
-    .map(({ bbox, translated }) => {
-      // Text-recognition boxes hug the letters, so pad them to fully cover the original.
-      const rawH = (bbox.y1 - bbox.y0) * scale;
-      const padX = rawH * 0.25;
-      const padY = rawH * 0.22;
-      const left = Math.max(0, bbox.x0 * scale - padX);
-      const top = Math.max(0, bbox.y0 * scale - padY);
-      const w = Math.min(img.clientWidth - left, (bbox.x1 - bbox.x0) * scale + padX * 2);
-      const h = rawH + padY * 2;
-      const fontSize = Math.max(8, Math.min(rawH * 0.85, (w / Math.max(4, translated.length)) * 1.8));
-      return `<div class="box" dir="auto" style="left:${left}px;top:${top}px;width:${Math.max(w, 24)}px;min-height:${h}px;font-size:${fontSize}px">${esc(translated)}</div>`;
-    })
-    .join('');
-  $('p-toggle').hidden = false;
-  overlay.classList.toggle('hide', $('p-toggle').querySelector('.active').dataset.show === 'original');
+  const boxes = photo.lines.map(({ bbox, translated }) => {
+    const rawH = (bbox.y1 - bbox.y0) * scale;
+    const padX = rawH * 0.25;
+    const padY = rawH * 0.22;
+    const left = Math.max(0, bbox.x0 * scale - padX);
+    const top = Math.max(0, bbox.y0 * scale - padY);
+    const w = Math.min(img.clientWidth - left, (bbox.x1 - bbox.x0) * scale + padX * 2);
+    const h = rawH + padY * 2;
+    const fontSize = Math.max(8, Math.min(rawH * 0.85, (w / Math.max(4, translated.length)) * 1.8));
+    return `<div class="box" dir="auto" style="left:${left}px;top:${top}px;width:${Math.max(w, 24)}px;min-height:${h}px;font-size:${fontSize}px">${esc(translated)}</div>`;
+  });
+  const words = photo.lines.flatMap((line, li) =>
+    line.words.map((w, wi) => {
+      const pad = 3;
+      return `<div class="word" data-line="${li}" data-word="${wi}" style="left:${w.bbox.x0 * scale - pad}px;top:${w.bbox.y0 * scale - pad}px;width:${(w.bbox.x1 - w.bbox.x0) * scale + pad * 2}px;height:${(w.bbox.y1 - w.bbox.y0) * scale + pad * 2}px"></div>`;
+    }),
+  );
+  overlay.innerHTML = boxes.join('') + words.join('');
 }
+
+$('p-overlay').addEventListener('click', async (e) => {
+  const el = e.target.closest('.word');
+  if (!el || !photo) {
+    $('p-popup').hidden = true;
+    return;
+  }
+  $('p-overlay').querySelectorAll('.word.sel').forEach((w) => w.classList.remove('sel'));
+  el.classList.add('sel');
+  const line = photo.lines[Number(el.dataset.line)];
+  const word = line.words[Number(el.dataset.word)].text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  const popup = $('p-popup');
+  const wrapRect = $('p-photo').getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  const below = r.bottom - wrapRect.top + 8;
+  popup.style.top = below + 150 < wrapRect.height ? `${below}px` : `${Math.max(8, r.top - wrapRect.top - 158)}px`;
+  popup.innerHTML = `<p class="p-word">${esc(word)}</p><p class="p-trans">…</p>`;
+  popup.hidden = false;
+  try {
+    const translatedWord = (await translate(word, photo.src, photo.tgt)) || word;
+    popup.innerHTML = `
+      <div class="row"><p class="p-word">${esc(word)} · ${esc(nameOf(photo.src))}</p><button class="icon-btn" id="pp-say" aria-label="Speak">${ICON.speaker}</button></div>
+      <p class="p-trans" dir="auto">${esc(translatedWord)}</p>
+      <p class="p-line" dir="auto">${esc(line.text)} → ${esc(line.translated)}</p>`;
+    $('pp-say').addEventListener('click', () => speak(translatedWord, photo.tgt, settings.speechRate));
+  } catch (error) {
+    popup.hidden = true;
+    toast(friendlyError(error));
+  }
+});
+$('p-image').addEventListener('click', () => {
+  $('p-popup').hidden = true;
+});
 
 function renderPhotoLines() {
   const box = $('p-lines');
   box.hidden = false;
-  box.innerHTML = `<div class="head"><span>Text in photo</span><button class="text-btn" id="p-copy">Copy all</button></div>` +
+  box.innerHTML =
+    `<div class="head"><span>Text in photo</span><button class="text-btn" id="p-copy">Copy all</button></div>` +
     photo.lines
-      .map((l, i) => `<div class="line"><div><p class="orig">${esc(l.text)}</p><p class="trans" dir="auto">${esc(l.translated)}</p></div><button class="icon-btn" data-line="${i}" aria-label="Speak">${ICON.speaker}</button></div>`)
+      .map((l, i) => `<div class="line"><div><p class="orig" dir="auto">${esc(l.text)}</p><p class="trans" dir="auto">${esc(l.translated)}</p></div><button class="icon-btn" data-line="${i}" aria-label="Speak">${ICON.speaker}</button></div>`)
       .join('');
 }
 
@@ -769,11 +974,23 @@ $('p-lines').addEventListener('click', (e) => {
   const say = e.target.closest('[data-line]');
   if (say) speak(photo.lines[Number(say.dataset.line)].translated, photo.tgt, settings.speechRate);
 });
-$('p-toggle').addEventListener('click', (e) => {
-  const button = e.target.closest('button');
-  if (!button) return;
-  $('p-toggle').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === button));
-  $('p-overlay').classList.toggle('hide', button.dataset.show === 'original');
+
+$('p-source').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'Text in Photo Is', current: settings.source, allowAuto: true });
+  if (!code) return;
+  saveSettings({ source: code });
+  detected = null;
+  renderCameraLangs();
+  renderTranslateLangs();
+  if (photo) processPhoto();
+});
+$('p-target').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'Translate To', current: settings.target });
+  if (!code) return;
+  saveSettings({ target: code });
+  renderCameraLangs();
+  renderTranslateLangs();
+  if (photo) processPhoto();
 });
 window.addEventListener('resize', () => photo?.lines.length && drawOverlay());
 
@@ -791,14 +1008,11 @@ function renderPhraseHome() {
 }
 
 $('ph-lang').addEventListener('click', async () => {
-  const code = await pickLanguage({
-    title: 'Phrasebook Language',
-    current: settings.phraseLang,
-    unavailableReason: (c) => (c !== 'en' && !canTranslate('en', c) ? 'Not available from English' : null),
-  });
+  const code = await pickLanguage({ title: 'Phrasebook Language', current: settings.phraseLang });
   if (!code) return;
   saveSettings({ phraseLang: code });
   renderPhraseHome();
+  if (code !== 'en' && !models.isPackInstalled(code) && navigator.onLine) ensurePacks([code]);
 });
 
 $('ph-categories').addEventListener('click', (e) => {
@@ -811,7 +1025,7 @@ $('ph-back').addEventListener('click', () => {
   $('ph-home').hidden = false;
 });
 
-function renderPhraseList(cache, pending) {
+function renderPhraseList(cache) {
   const code = settings.phraseLang;
   $('ph-list').innerHTML = openCategory.phrases
     .map((p, i) => {
@@ -819,7 +1033,7 @@ function renderPhraseList(cache, pending) {
       return `<div class="list-row phrase">
         <button class="main" data-phrase="${i}" style="text-align:left">
           <div class="en">${esc(p)}</div>
-          <div class="tr${tr ? '' : ' pending'}" dir="auto">${esc(tr ?? (pending ? 'Translating…' : '—'))}</div>
+          ${tr ? `<div class="tr" dir="auto">${esc(tr)}</div>` : ''}
         </button>
         ${tr ? `<button class="icon-btn" data-phrase="${i}" aria-label="Speak">${ICON.speaker}</button><button class="icon-btn star" data-fav="${i}" aria-label="Add to favorites">${ICON.star}</button>` : ''}
       </div>`;
@@ -827,39 +1041,56 @@ function renderPhraseList(cache, pending) {
     .join('');
 }
 
-async function openPhraseCategory(category) {
+function updatePhraseNeed() {
+  if (!openCategory) return;
+  const code = settings.phraseLang;
+  const need = $('ph-need');
+  const missing = missingPacks([code]);
+  need.hidden = !missing.length;
+  if (!missing.length) {
+    const cache = getPhraseCache(code);
+    if (code !== 'en' && openCategory.phrases.some((p) => !cache[p])) fillPhrases();
+    return;
+  }
+  const { downloading } = models.state();
+  const busy = downloading && (downloading.codes.includes(code) || bigJob);
+  $('ph-need-text').textContent = busy ? `Downloading ${nameOf(code)}…` : `Download ${nameOf(code)} (${fmtBytes(models.packBytes([code], true))}) to use these phrases — then they work offline.`;
+  $('ph-need-btn').hidden = Boolean(busy);
+  setBar(need, busy ? downloading.fraction : null);
+}
+
+$('ph-need-btn').addEventListener('click', () => ensurePacks([settings.phraseLang]));
+
+let fillingPhrases = false;
+async function fillPhrases() {
+  if (fillingPhrases || !openCategory) return;
+  const category = openCategory;
+  const code = settings.phraseLang;
+  const cache = getPhraseCache(code);
+  const missing = category.phrases.filter((p) => !cache[p]);
+  if (!missing.length) return;
+  fillingPhrases = true;
+  try {
+    const translated = await translateMany(missing, 'en', code);
+    translated.forEach((t, i) => t && (cache[missing[i]] = t));
+    setPhraseCache(code, cache);
+    if (openCategory === category && settings.phraseLang === code) renderPhraseList(cache);
+  } catch (error) {
+    toast(friendlyError(error), 4000);
+  } finally {
+    fillingPhrases = false;
+  }
+}
+
+function openPhraseCategory(category) {
   openCategory = category;
   $('ph-home').hidden = true;
   $('ph-category').hidden = false;
   $('ph-title').textContent = `${category.icon} ${category.title}`;
   window.scrollTo({ top: 0 });
-
-  const code = settings.phraseLang;
-  const cache = getPhraseCache(code);
-  const missing = code === 'en' ? [] : category.phrases.filter((p) => !cache[p]);
-  renderPhraseList(cache, missing.length > 0);
-  if (!missing.length) return;
-
-  if (!engine.isPairReady(status, 'en', code)) await refreshStatus();
-  if (!engine.isPairReady(status, 'en', code) && !navigator.onLine) {
-    toast(`Download ${nameOf(code)} in Settings to use the phrasebook offline.`, 4000);
-    renderPhraseList(cache, false);
-    return;
-  }
-  const progressBox = $('ph-category');
-  try {
-    const translated = await engine.translate(missing.join('\n'), 'en', code, engine.progressTracker((f) => setProgress(progressBox, f)));
-    translated.split('\n').forEach((t, i) => {
-      if (missing[i] && t) cache[missing[i]] = t;
-    });
-    setPhraseCache(code, cache);
-    refreshStatus();
-  } catch (error) {
-    toast(friendlyError(error), 4000);
-  } finally {
-    progressBox.querySelector('.progress').hidden = true;
-    if (openCategory === category && settings.phraseLang === code) renderPhraseList(cache, false);
-  }
+  renderPhraseList(getPhraseCache(settings.phraseLang));
+  updatePhraseNeed();
+  if (missingPacks([settings.phraseLang]).length && navigator.onLine && !models.state().downloading) ensurePacks([settings.phraseLang]);
 }
 
 $('ph-list').addEventListener('click', (e) => {
@@ -901,9 +1132,7 @@ function relativeTime(ts) {
 function renderHistory() {
   const query = $('h-search').value.trim().toLowerCase();
   const all = getHistory();
-  const items = all.filter(
-    (h) => (historyFilter === 'all' || h.favorite) && (!query || h.source.toLowerCase().includes(query) || h.translation.toLowerCase().includes(query)),
-  );
+  const items = all.filter((h) => (historyFilter === 'all' || h.favorite) && (!query || h.source.toLowerCase().includes(query) || h.translation.toLowerCase().includes(query)));
   $('h-list').innerHTML = items
     .map(
       (h) => `<div class="list-row hist" data-id="${h.id}">
@@ -951,9 +1180,7 @@ $('h-list').addEventListener('click', (e) => {
   } else if (action === 'del') {
     deleteHistory(entry.id);
     renderHistory();
-  } else {
-    copyText(entry.translation);
-  }
+  } else copyText(entry.translation);
 });
 $('h-clear').addEventListener('click', () => {
   if (confirm('Clear history? Favorites are kept.')) {
@@ -966,100 +1193,97 @@ $('h-clear').addEventListener('click', () => {
 // Settings sheet
 // ---------------------------------------------------------------------------
 
-let downloading = null; // language code or 'speech'
-let downloadFraction = 0;
+function renderDlCard(stripText, fraction) {
+  const card = $('dl-card');
+  const { downloading } = models.state();
+  if (stripText) {
+    const parts = stripText.split(' · ');
+    const details = [parts.slice(2).join(' · '), downloading?.bytesPerSecond ? `${(downloading.bytesPerSecond / 1e6).toFixed(1)} MB/s` : ''].filter(Boolean).join(' · ');
+    card.innerHTML = `<h4>${esc(parts[0])}… ${Math.round(fraction * 100)}%</h4>
+      <div class="progress"><div style="width:${Math.round(fraction * 100)}%"></div></div>
+      <p>${details ? `${esc(details)}. ` : ''}You can keep using Parlivo while this runs.</p>
+      ${downloading ? '<button class="btn" id="dl-stop">Stop</button>' : ''}`;
+    return;
+  }
+  if (everythingReady()) {
+    card.innerHTML = '<h4 class="ok">✓ Everything is downloaded</h4><p>All languages, voice input and camera reading work with no internet.</p>';
+    return;
+  }
+  const remaining = totalEverythingBytes(true);
+  card.innerHTML = `<h4>Download for Offline</h4>
+    <p>Every language (${PACK_CODES.length + 1}), voice input and camera reading — ${fmtBytes(remaining)}${remaining < totalEverythingBytes(false) ? ' left' : ''}. Wi-Fi recommended.</p>
+    <button class="btn primary wide" id="dl-all">Download Everything</button>`;
+}
 
 function renderPacks() {
+  const { downloading } = models.state();
   const rows = SORTED.filter((l) => l.code !== 'en').map((l) => {
-    const pairs = packFor(l.code);
-    const have = pairs.filter((p) => status.pairs.has(p));
-    const complete = pairs.length > 0 && have.length === pairs.length;
-    const size = pairs.reduce((s, p) => s + modelSizeMB(p), 0);
+    const installed = models.isPackInstalled(l.code);
+    const busy = downloading?.codes.includes(l.code);
     let right;
-    if (downloading === l.code) right = `<span class="pill">${Math.round(downloadFraction * 100)}%</span>`;
-    else if (complete) right = `<button class="pill ok" data-remove="${l.code}">✓ Downloaded</button>`;
+    if (busy) right = `<span class="pill">${Math.round(downloading.fraction * 100)}%</span>`;
+    else if (installed) right = `<button class="pill ok" data-remove="${l.code}">✓ Ready</button>`;
     else right = `<button class="pill" data-download="${l.code}" ${downloading ? 'disabled' : ''}>Download</button>`;
-    return `<div class="list-row pack">
-      <div class="main">${esc(l.name)} <span class="sub">· ${esc(l.native)}</span>
-        <div class="sub">${packDirections(l.code)} · ${mb(size)}${have.length && !complete ? ' · partly downloaded' : ''}</div>
-        ${downloading === l.code ? `<div class="progress"><div style="width:${Math.round(downloadFraction * 100)}%"></div></div>` : ''}
-      </div>${right}</div>`;
+    return `<div class="list-row pack"><div class="main">${esc(l.name)} <span class="sub">· ${esc(l.native)}</span>
+      <div class="sub">${fmtBytes(models.packBytes([l.code]))}</div></div>${right}</div>`;
   });
+  rows.push(`<div class="list-row pack"><div class="main">🎙️ Voice input<div class="sub">All languages · ${SPEECH_MODEL_MB} MB</div></div>
+    ${speechInstalled ? '<button class="pill ok" data-remove="speech">✓ Ready</button>' : `<button class="pill" data-download="speech" ${downloading || bigJob ? 'disabled' : ''}>Download</button>`}</div>`);
   $('packs').innerHTML = rows.join('');
-
-  let speechRight;
-  if (downloading === 'speech') speechRight = `<span class="pill">${Math.round(downloadFraction * 100)}%</span>`;
-  else if (status.speech) speechRight = '<button class="pill ok" data-remove="speech">✓ Downloaded</button>';
-  else speechRight = `<button class="pill" data-download="speech" ${downloading ? 'disabled' : ''}>Download</button>`;
-  $('speech-pack').innerHTML = `<div class="list-row pack"><div class="main">Speech recognition<div class="sub">All languages · ${SPEECH_MODEL_MB} MB · needed for the microphone</div>
-    ${downloading === 'speech' ? `<div class="progress"><div style="width:${Math.round(downloadFraction * 100)}%"></div></div>` : ''}</div>${speechRight}</div>`;
 }
 
 async function renderStorage() {
   try {
     const { usage, quota } = await navigator.storage.estimate();
-    $('storage-info').textContent = `Using ${mb(usage / 1e6)} of storage${quota ? ` (up to ${mb(quota / 1e6)} available)` : ''}.`;
+    $('storage-info').textContent = `Parlivo is using ${fmtBytes(usage)} on this phone${quota ? ` (room for up to ${fmtBytes(quota)})` : ''}.`;
   } catch {
     $('storage-info').textContent = '';
   }
 }
 
-async function downloadPack(code) {
-  if (!navigator.onLine) {
-    toast('Connect to the internet to download languages.');
-    return;
-  }
-  downloading = code;
-  downloadFraction = 0;
-  renderPacks();
-  const onProgress = engine.progressTracker((f) => {
-    downloadFraction = f;
-    renderPacks();
-  });
-  try {
-    if (code === 'speech') await engine.downloadSpeech(onProgress);
-    else await engine.downloadPairs(packFor(code), onProgress);
-    toast(code === 'speech' ? 'Voice input is ready offline' : `${nameOf(code)} is ready offline`);
-  } catch (error) {
-    toast(friendlyError(error), 4000);
-  } finally {
-    downloading = null;
-    await refreshStatus();
-    renderPacks();
-    renderStorage();
-  }
-}
-
-async function removePack(code) {
-  const label = code === 'speech' ? 'the voice model' : nameOf(code);
-  if (!confirm(`Remove ${label} from this device? You can download it again later.`)) return;
-  if (code === 'speech') await engine.removeSpeech();
-  else {
-    // Keep models another downloaded language still needs? Each pack only holds its own en↔X pairs.
-    await engine.removePairs(packFor(code));
-  }
-  await refreshStatus();
-  renderPacks();
-  renderStorage();
-}
-
-$('settings').addEventListener('click', (e) => {
-  const dl = e.target.closest('[data-download]');
-  if (dl && !downloading) downloadPack(dl.dataset.download);
-  const rm = e.target.closest('[data-remove]');
-  if (rm && !downloading) removePack(rm.dataset.remove);
-});
-
-$('open-settings').addEventListener('click', () => {
+function openSettings() {
   $('s-autospeak').checked = settings.autoSpeak;
   $('s-convspeak').checked = settings.convAutoSpeak;
   $('s-history').checked = settings.saveHistory;
   $('s-rate').value = settings.speechRate;
+  if (!$('settings').open) $('settings').showModal();
+  renderDownloads();
+  renderDlCard(...stripState());
   renderPacks();
   renderStorage();
-  $('settings').showModal();
-  refreshStatus();
+}
+
+function stripState() {
+  const strip = $('dl-strip');
+  if (strip.hidden) return [null, 0];
+  return [$('dl-strip-text').textContent, parseFloat($('dl-strip-fill').style.width) / 100 || 0];
+}
+
+$('settings').addEventListener('click', async (e) => {
+  if (e.target.closest('#dl-all')) downloadEverything();
+  if (e.target.closest('#dl-stop')) models.cancelDownload();
+  const dl = e.target.closest('[data-download]');
+  if (dl) {
+    if (dl.dataset.download === 'speech') {
+      if (await ensureSpeechModel()) renderPacks();
+    } else ensurePacks([dl.dataset.download]);
+  }
+  const rm = e.target.closest('[data-remove]');
+  if (rm) {
+    const code = rm.dataset.remove;
+    const label = code === 'speech' ? 'voice input' : nameOf(code);
+    if (!confirm(`Remove ${label} from this phone? You can download it again later.`)) return;
+    if (code === 'speech') {
+      await voice.removeSpeech();
+      speechInstalled = false;
+      localStorage.removeItem('speechInstalled');
+    } else await models.removePacks([code]);
+    renderDownloads();
+    renderStorage();
+  }
 });
+
+$('open-settings').addEventListener('click', openSettings);
 $('settings-close').addEventListener('click', () => $('settings').close());
 $('s-autospeak').addEventListener('change', (e) => saveSettings({ autoSpeak: e.target.checked }));
 $('s-convspeak').addEventListener('change', (e) => saveSettings({ convAutoSpeak: e.target.checked }));
@@ -1069,7 +1293,7 @@ $('s-rate').addEventListener('change', (e) => {
   speak('This is how translations will sound.', 'en', settings.speechRate);
 });
 $('s-delete-all').addEventListener('click', () => {
-  if (confirm('Delete all history and favorites from this device?')) {
+  if (confirm('Delete all history and favorites from this phone?')) {
     clearHistory({ keepFavorites: false });
     renderHistory();
     toast('History deleted');
@@ -1090,26 +1314,30 @@ if ('serviceWorker' in navigator) {
   const startedAt = Date.now();
   const hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.register('sw.js').catch(() => {});
-  // A new version was installed. Right after launch, switch to it quietly; later, just mention it.
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (!hadController) return;
-    if (Date.now() - startedAt < 15000 && !translating && !micOwner) window.location.reload();
-    else toast('An update is ready. Close and reopen the app to use it.', 4000);
+    if (Date.now() - startedAt < 15000 && !micOwner && !models.state().downloading) window.location.reload();
+    else toast('An update is ready. Close and reopen Parlivo to use it.', 4000);
   });
 }
-// Ask the browser not to clear downloaded languages when space runs low.
 navigator.storage?.persist?.().catch(() => {});
+
+// Free the space used by the old (larger) translation models from version 1.
+caches
+  .open('transformers-cache')
+  .then(async (cache) => {
+    for (const request of await cache.keys()) if (request.url.includes('/Xenova/opus-mt-')) await cache.delete(request);
+  })
+  .catch(() => {});
 
 $('version').textContent = `Version ${__APP_VERSION__}`;
 
-// First run: pick sensible defaults from the device language.
 if (!localStorage.getItem('settings')) {
   const device = (navigator.language || 'en').slice(0, 2);
   if (lang(device) && device !== 'en') saveSettings({ target: 'en', convA: device, convB: 'en', phraseLang: 'en' });
   else saveSettings({});
 }
 
-// iPhone/iPad Safari: suggest installing to the Home Screen (once).
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const standalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
 if (isIOS && !standalone && !localStorage.getItem('installTipDismissed')) $('install-tip').hidden = false;
@@ -1123,9 +1351,16 @@ renderTalkSides();
 renderTranscript();
 renderCameraLangs();
 renderPhraseHome();
-updateInputUI();
 updateNetwork();
-refreshStatus();
 
-// Let tests and debugging reach a few internals.
-window.__app = { engine, settings, refreshStatus, getStatus: () => status };
+models
+  .scanInstalled()
+  .then(() => {
+    renderDownloads();
+    // Load the usual language pair in the background so the first translation is instant.
+    const src = settings.source === 'auto' ? settings.lastOther && 'en' : settings.source;
+    if (src && pairReady(src, settings.target)) warmUp(src, settings.target);
+  })
+  .catch(() => renderDownloads());
+
+window.__app = { models, settings, translate, downloadEverything };
