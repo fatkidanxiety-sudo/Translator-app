@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Parlivo</title>
   <meta name="description" content="Parlivo — translate text, voice, photos and conversations with no internet connection.">
   <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
@@ -135,6 +135,10 @@
         <video id="p-video" playsinline muted autoplay></video>
         <div class="vf-frame" id="p-frame"><i></i><i></i><i></i><i></i></div>
         <div class="vf-hint">Fit the text inside the frame, then tap the shutter</div>
+        <div class="vf-zoom" id="p-zoom">
+          <button data-zoom="1" class="active">1×</button><button data-zoom="2">2×</button><button data-zoom="3">3×</button><button data-zoom="5">5×</button>
+        </div>
+        <div class="vf-zoom-level" id="p-zoom-level" hidden></div>
         <div class="vf-controls">
           <label class="vf-btn" aria-label="Choose photo">
             <input type="file" accept="image/*" id="p-file-live">

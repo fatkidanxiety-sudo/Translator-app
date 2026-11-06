@@ -826,13 +826,14 @@ async function startCamera() {
     // Reuse the open camera when possible: iOS asks for permission again whenever it's reopened.
     if (!stream || !stream.getVideoTracks().some((t) => t.readyState === 'live')) {
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1920 } },
         audio: false,
       });
     }
     if (currentTab !== 'camera' || photo) return;
     const video = $('p-video');
     if (video.srcObject !== stream) video.srcObject = stream;
+    setZoom(zoom);
     await video.play().catch(() => {});
     $('p-live').hidden = false;
     $('p-start').hidden = true;
@@ -860,13 +861,69 @@ function stopCamera({ now = false } = {}) {
   else cameraReleaseTimer = setTimeout(() => currentTab !== 'camera' && release(), 60000);
 }
 
+// ---- Camera zoom: pinch on the viewfinder or tap 1× 2× 3× 5× ----
+// Uses the camera's real (optical/sensor) zoom when the browser allows it, otherwise zooms the
+// picture digitally; either way the photo captures exactly what's on screen.
+let zoom = 1;
+let digitalZoom = 1;
+const ZOOM_MAX = 5;
+
+function zoomCapabilities() {
+  const track = stream?.getVideoTracks()[0];
+  const caps = track?.getCapabilities?.();
+  return caps?.zoom && caps.zoom.max > 1 ? { track, min: caps.zoom.min ?? 1, max: caps.zoom.max } : null;
+}
+
+let zoomLabelTimer = null;
+function setZoom(value, { showLabel = false } = {}) {
+  zoom = Math.min(ZOOM_MAX, Math.max(1, value));
+  const hw = zoomCapabilities();
+  if (hw) {
+    const level = Math.min(hw.max, Math.max(hw.min, zoom));
+    hw.track.applyConstraints({ advanced: [{ zoom: level }] }).catch(() => {});
+    digitalZoom = zoom / level; // beyond the camera's own range, zoom the rest digitally
+  } else digitalZoom = zoom;
+  $('p-video').style.transform = digitalZoom > 1.001 ? `scale(${digitalZoom})` : '';
+  $('p-zoom').querySelectorAll('button').forEach((b) => b.classList.toggle('active', Math.abs(Number(b.dataset.zoom) - zoom) < 0.15));
+  if (showLabel) {
+    const label = $('p-zoom-level');
+    label.textContent = `${zoom.toFixed(1)}×`;
+    label.hidden = false;
+    clearTimeout(zoomLabelTimer);
+    zoomLabelTimer = setTimeout(() => (label.hidden = true), 700);
+  }
+}
+
+$('p-zoom').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-zoom]');
+  if (button) setZoom(Number(button.dataset.zoom), { showLabel: true });
+});
+
+// Pinch to zoom on the viewfinder.
+let pinch = null;
+const touchDistance = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+$('p-live').addEventListener('touchstart', (e) => {
+  if (e.touches.length === 2) pinch = { distance: touchDistance(e.touches), zoom };
+}, { passive: true });
+$('p-live').addEventListener('touchmove', (e) => {
+  if (e.touches.length === 2 && pinch) {
+    e.preventDefault();
+    setZoom(pinch.zoom * (touchDistance(e.touches) / pinch.distance), { showLabel: true });
+  }
+}, { passive: false });
+$('p-live').addEventListener('touchend', (e) => {
+  if (e.touches.length < 2) pinch = null;
+});
+// Safari's own pinch-zoom of the page: never.
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+
 $('p-shutter').addEventListener('click', () => {
   const video = $('p-video');
   if (!video.videoWidth) return;
-  // Keep only what's inside the guide frame: less background, fewer false "words", faster reading.
+  // Keep only what's inside the guide frame (at the current zoom): less background, fewer false "words".
   const view = $('p-live').getBoundingClientRect();
   const frame = $('p-frame').getBoundingClientRect();
-  const cover = Math.max(view.width / video.videoWidth, view.height / video.videoHeight);
+  const cover = Math.max(view.width / video.videoWidth, view.height / video.videoHeight) * digitalZoom;
   const offsetX = (view.width - video.videoWidth * cover) / 2;
   const offsetY = (view.height - video.videoHeight * cover) / 2;
   const sx = Math.max(0, (frame.left - view.left - offsetX) / cover);

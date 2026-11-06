@@ -1,7 +1,7 @@
 // Service worker: keeps the app itself available offline.
 // (Translation models and text-recognition data are cached separately by
 // Transformers.js and Tesseract, in Cache Storage and IndexedDB.)
-const VERSION = '89d298dd3aa2';
+const VERSION = 'f3fd3f08d825';
 const CACHE = `app-${VERSION}`;
 const PRECACHE = [
   "./",
