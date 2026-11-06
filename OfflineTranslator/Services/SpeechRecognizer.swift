@@ -35,7 +35,7 @@ final class SpeechRecognizer {
 
     /// Asks for speech and microphone permission. Returns true when both are granted.
     static func requestAuthorization() async -> Bool {
-        let speechStatus = await withCheckedContinuation { continuation in
+        let speechStatus = await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
         guard speechStatus == .authorized else { return false }
@@ -106,7 +106,7 @@ final class SpeechRecognizer {
 
         // Wait briefly for the recognizer's final result, which may add the last words.
         if task != nil {
-            await withCheckedContinuation { continuation in
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 finishContinuation = continuation
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .seconds(1.5))
