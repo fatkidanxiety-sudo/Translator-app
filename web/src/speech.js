@@ -309,6 +309,9 @@ export class ContinuousListener {
     this.recorder = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
+    cancelAnimationFrame(this.meterFrame);
+    this.meterCtx?.close?.();
+    this.meterCtx = null;
     this.h.onState?.('stopped');
   }
 
@@ -379,13 +382,16 @@ export class ContinuousListener {
   }
 
   // On-phone model: record ~6-second chunks back to back and transcribe each one with speech in it.
+  // The raw microphone is used (no voice-call filtering, which discards distant voices), quiet
+  // chunks are amplified, and the room's background noise level is learned so speech stands out.
   async startChunks() {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser can’t use the microphone.');
     if (!this.stream) {
-      // Turn off voice-call processing so quieter, more distant voices are kept.
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: true } });
     }
     this.h.onState?.('listening');
+    this.startMeter();
+    this.noiseFloor = null;
     const mimeType = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((t) => window.MediaRecorder?.isTypeSupported?.(t));
     const next = () => {
       if (!this.active) return;
@@ -398,15 +404,18 @@ export class ContinuousListener {
         const blob = new Blob(chunks, { type: recorder.mimeType });
         if (!blob.size) return;
         try {
-          const audio = await decodeTo16kMono(await blob.arrayBuffer());
-          // Skip near-silent chunks (saves battery and avoids made-up words).
-          let energy = 0;
-          for (let i = 0; i < audio.length; i += 4) energy += audio[i] * audio[i];
-          if (Math.sqrt(energy / (audio.length / 4)) < 0.004) return;
+          const audio = highPass(await decodeTo16kMono(await blob.arrayBuffer()));
+          const level = rms(audio);
+          // Only skip near-total silence; in a busy room the speech model decides what's speech.
+          if (level < 0.0006) return;
+          normalize(audio, level);
           this.h.onPartial?.('…');
-          const text = await this.h.transcribeChunk(audio);
+          const text = cleanHeard(await this.h.transcribeChunk(audio));
           this.h.onPartial?.('');
-          if (text && this.active) this.h.onPhrase?.(text);
+          if (text && this.active && text !== this.lastText) {
+            this.lastText = text;
+            this.h.onPhrase?.(text);
+          }
         } catch {
           /* skip a chunk that couldn't be read */
         }
@@ -416,4 +425,64 @@ export class ContinuousListener {
     };
     next();
   }
+
+  /** Live microphone level (0–1) for the on-screen meter. */
+  startMeter() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      this.meterCtx = new Ctx();
+      const source = this.meterCtx.createMediaStreamSource(this.stream);
+      const analyser = this.meterCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const data = new Float32Array(analyser.fftSize);
+      const tick = () => {
+        if (!this.active || !this.meterCtx) return;
+        analyser.getFloatTimeDomainData(data);
+        this.h.onLevel?.(Math.min(1, rms(data) * 12));
+        this.meterFrame = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      /* the meter is optional */
+    }
+  }
+}
+
+// ---- Audio helpers for Listen mode ----
+
+function rms(samples) {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / Math.max(1, samples.length));
+}
+
+/** Removes low rumble (air conditioning, traffic, table knocks) below about 100 Hz. */
+function highPass(samples, rate = 16000, cutoff = 100) {
+  const rc = 1 / (2 * Math.PI * cutoff);
+  const alpha = rc / (rc + 1 / rate);
+  let prevIn = samples[0] ?? 0;
+  let prevOut = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const x = samples[i];
+    prevOut = alpha * (prevOut + x - prevIn);
+    prevIn = x;
+    samples[i] = prevOut;
+  }
+  return samples;
+}
+
+/** Brings quiet, distant speech up to a normal level (with a soft limit so it never clips). */
+function normalize(samples, level) {
+  const gain = Math.min(40, 0.08 / Math.max(level, 1e-4));
+  for (let i = 0; i < samples.length; i++) samples[i] = Math.tanh(samples[i] * gain);
+}
+
+// Phrases speech models are known to invent from silence or noise (subtitle credits and the like).
+const INVENTED = /^(thank you\.?|thanks for watching!?|you|bye\.?|grazie\.?|sottotitoli.*|subtitles.*|amara\.org.*|продолжение следует.*|merci\.?|gracias\.?|untertitel.*|\.+|…)$/i;
+
+function cleanHeard(text) {
+  const t = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!t || INVENTED.test(t) || /amara\.org|sottotitoli a cura|subtitles by/i.test(t)) return '';
+  return t;
 }

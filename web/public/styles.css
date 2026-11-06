@@ -371,3 +371,8 @@ html { touch-action: manipulation; }
 .listen-btn.on { background: var(--red); }
 #l-speak.on { background: var(--accent-soft); }
 #l-speak:not(.on) { color: var(--text-3); }
+
+#l-live-text { flex: 1; }
+.listen-meter { width: 56px; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 20%, transparent); overflow: hidden; flex: none; }
+.listen-meter span { display: block; height: 100%; width: 0; background: var(--green); transition: width 0.08s linear; }
+.listen-hint { text-align: center; color: var(--orange); }

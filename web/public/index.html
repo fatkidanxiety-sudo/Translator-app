@@ -113,6 +113,10 @@
           <span class="arrow">→</span>
           <button class="lang-btn" id="l-target"></button>
         </div>
+        <div class="segmented" id="l-modes">
+          <button data-lmode="far" class="active">🎯 Far voices</button>
+          <button data-lmode="fast">⚡ Fast</button>
+        </div>
         <div class="listen-feed" id="l-feed">
           <div class="empty" id="l-empty">
             <div class="empty-icon">👂</div>
@@ -122,7 +126,9 @@
         </div>
         <div class="listen-live" id="l-live" hidden>
           <span class="listen-dot"></span><span id="l-live-text">Listening…</span>
+          <span class="listen-meter"><span id="l-meter-fill"></span></span>
         </div>
+        <p class="hint listen-hint" id="l-hint" hidden>Voices are very faint. Put the phone closer to the people talking, microphone end (bottom) towards them.</p>
         <div class="listen-controls">
           <button class="icon-btn" id="l-speak" aria-label="Read translations aloud" title="Read aloud">
             <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>

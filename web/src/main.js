@@ -797,6 +797,7 @@ $('c-clear').addEventListener('click', () => {
 
 let listener = null;
 let wakeLock = null;
+let quietFrames = 0;
 let phraseChain = Promise.resolve();
 const listenSrc = () => settings.listenSrc ?? settings.lastPhotoLang ?? (settings.target !== 'it' ? 'it' : 'es');
 const listenTgt = () => settings.listenTgt ?? (settings.target === listenSrc() ? 'en' : settings.target);
@@ -805,7 +806,19 @@ function renderListenLangs() {
   $('l-source').textContent = `👂 ${nameOf(listenSrc())}`;
   $('l-target').textContent = nameOf(listenTgt());
   $('l-speak').classList.toggle('on', Boolean(settings.listenSpeak));
+  $('l-modes').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.lmode === (settings.listenMode === 'fast' ? 'fast' : 'far')));
 }
+
+$('l-modes').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-lmode]');
+  if (!button) return;
+  const wasOn = Boolean(listener);
+  stopListening();
+  saveSettings({ listenMode: button.dataset.lmode });
+  renderListenLangs();
+  toast(button.dataset.lmode === 'fast' ? 'Fast: quicker, best for people close to the phone.' : 'Far voices: hears people further away (a few seconds slower).', 3500);
+  if (wasOn) startListening();
+});
 
 function setListenMode(mode) {
   $('c-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
@@ -835,8 +848,9 @@ async function startListening() {
   const src = listenSrc();
   const tgt = listenTgt();
   if (missingPacks([src, tgt]).length && !(await ensurePacks([src, tgt]))) return;
-  // Without the iPhone's built-in recognition, the on-phone speech model does the listening.
-  if (!LiveRecognizer.available && !(await ensureSpeechModel())) return;
+  // "Far voices" (default) uses the on-phone speech model on the raw microphone; "Fast" uses the
+  // iPhone's built-in recognition, which is quicker but tuned for someone talking right into the phone.
+  if ((settings.listenMode !== 'fast' || !LiveRecognizer.available) && !(await ensureSpeechModel())) return;
   stopSpeaking();
   releaseOcr();
   releaseCameraReader();
@@ -858,13 +872,20 @@ async function startListening() {
     onPartial: (text) => {
       $('l-live-text').textContent = text && text !== '…' ? text : text === '…' ? 'Understanding…' : `Listening for ${nameOf(src)}…`;
     },
+    onLevel: (level) => {
+      $('l-meter-fill').style.width = `${Math.round(level * 100)}%`;
+      // Mostly silence for a while: suggest moving closer.
+      quietFrames = level < 0.06 ? quietFrames + 1 : 0;
+      $('l-hint').hidden = quietFrames < 600;
+    },
     transcribeChunk: async (audio) => {
       if (!speechInstalled) return '';
       return voice.transcribe(audio, src);
     },
   });
+  quietFrames = 0;
   try {
-    const mode = await listener.start(lang(src).bcp47);
+    const mode = await listener.start(lang(src).bcp47, { preferChunks: settings.listenMode !== 'fast' });
     if (mode === 'chunks' && !speechInstalled && !(await ensureSpeechModel())) {
       stopListening();
       return;
@@ -895,6 +916,7 @@ function stopListening() {
   $('l-toggle').classList.remove('on');
   $('l-toggle-text').textContent = 'Listen';
   $('l-live').hidden = true;
+  $('l-hint').hidden = true;
 }
 
 $('l-toggle').addEventListener('click', () => (listener ? stopListening() : startListening()));
