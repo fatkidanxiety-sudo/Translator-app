@@ -12,3 +12,9 @@ compression, from Firefox's public model service. License: MPL-2.0 — see https
 PaddleOCR PP-OCRv5 mobile models (Apache-2.0): `det.onnx` finds text lines, `rec-*.onnx` reads them
 (cjk = Chinese/Japanese/English from PaddlePaddle's official ONNX release; latin, eslav, korean, arabic,
 hindi, thai and greek converted to ONNX by monkt/paddleocr-onnx, see `ATTRIBUTION-monkt-README.md`).
+
+## Spelling correction word lists (`dict/`)
+
+The 50,000 most common words per language from FrequencyWords by Hermit Dave
+(https://github.com/hermitdave/FrequencyWords, built from OpenSubtitles 2018), licensed CC-BY-SA-4.0.
+Used to fix words the camera misreads before translating them.

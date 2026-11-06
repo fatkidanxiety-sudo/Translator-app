@@ -1,4 +1,129 @@
 {
+ "dicts": {
+  "langs": {
+   "ar": {
+    "gzSize": 179279,
+    "path": "dict/ar.txt.gz",
+    "sha256": "33c0cfab3d51fc009200480cc6ed1e838d67f6519bcca14b0a315134156f9110",
+    "size": 525025
+   },
+   "cs": {
+    "gzSize": 205191,
+    "path": "dict/cs.txt.gz",
+    "sha256": "2dc31a397a09d446170e3537aededc3e7687afeea6399b3b1c5526f3d48a3d29",
+    "size": 436664
+   },
+   "de": {
+    "gzSize": 212318,
+    "path": "dict/de.txt.gz",
+    "sha256": "a8883f1bc802ad68cabc4798bd397ac1cb94496b5aa843803f0cb0c069d517e6",
+    "size": 464469
+   },
+   "el": {
+    "gzSize": 257022,
+    "path": "dict/el.txt.gz",
+    "sha256": "906ded9fe82f144a48a620a64fd68e893f5b54ebc9dd845e0943f9afebd60777",
+    "size": 799584
+   },
+   "en": {
+    "gzSize": 192314,
+    "path": "dict/en.txt.gz",
+    "sha256": "bec2b0583a4a62659f6beea9fde068671bfd41273c7b328b2e9fd5bcfe68f5ac",
+    "size": 392470
+   },
+   "es": {
+    "gzSize": 198549,
+    "path": "dict/es.txt.gz",
+    "sha256": "ba6e3abeab48d14831709217554332b81336627677894763392f6d7830a4cf6d",
+    "size": 435645
+   },
+   "fa": {
+    "gzSize": 194063,
+    "path": "dict/fa.txt.gz",
+    "sha256": "e9fbe56df807b2dd22193f6e6107ccf4274840ebe6e9d26fc75de56368466965",
+    "size": 566169
+   },
+   "fr": {
+    "gzSize": 199638,
+    "path": "dict/fr.txt.gz",
+    "sha256": "eb913ab88eff56dd83b8c4ab57494e2ba971cb7d68104c7f04e97b2c5adb5162",
+    "size": 435253
+   },
+   "he": {
+    "gzSize": 189992,
+    "path": "dict/he.txt.gz",
+    "sha256": "4ed1be46ccf52945acd21133bb9f7039569fc546aa3fbb6ed87a295ed18b1e57",
+    "size": 575602
+   },
+   "id": {
+    "gzSize": 196228,
+    "path": "dict/id.txt.gz",
+    "sha256": "333434d05604d93df79420f7b78c6de416749b410b2357df06f57b53fbcb3dc8",
+    "size": 408668
+   },
+   "it": {
+    "gzSize": 194370,
+    "path": "dict/it.txt.gz",
+    "sha256": "dc58c387dd187c2959ac470abdba5dfdd251a1ffa674f45847dccade36613714",
+    "size": 433365
+   },
+   "nl": {
+    "gzSize": 209519,
+    "path": "dict/nl.txt.gz",
+    "sha256": "abb67eaa7034443c3fbcd2967b48d5951b917a8b809135b9047fc2714ff54d82",
+    "size": 442706
+   },
+   "pl": {
+    "gzSize": 204716,
+    "path": "dict/pl.txt.gz",
+    "sha256": "c6fa8f5cfdb4c5a31e4706428f201c1fcd67c49f72a608e647905da21534a3e0",
+    "size": 456158
+   },
+   "pt": {
+    "gzSize": 200814,
+    "path": "dict/pt.txt.gz",
+    "sha256": "c2c69b1cd063c8537c4e7bda458f12ef7971ca8c0f1c2d6de54eb83083d52957",
+    "size": 439514
+   },
+   "ro": {
+    "gzSize": 200136,
+    "path": "dict/ro.txt.gz",
+    "sha256": "137fda32c70d789a2e2c4b0ff4e350f3902185e34a833510a997875a9ca8018a",
+    "size": 433759
+   },
+   "ru": {
+    "gzSize": 240757,
+    "path": "dict/ru.txt.gz",
+    "sha256": "67b73b96a3ee255bda8ef1564039aa70a846ba5d70dcb52672b030fbf3b5b9de",
+    "size": 785014
+   },
+   "sv": {
+    "gzSize": 205862,
+    "path": "dict/sv.txt.gz",
+    "sha256": "a55c08e38c057dd00ffbd9092f6ca5b14bce7a9f3401f485caff7c024c66247d",
+    "size": 436487
+   },
+   "tr": {
+    "gzSize": 202600,
+    "path": "dict/tr.txt.gz",
+    "sha256": "4826a16fb1aab153652a7fbc9c1dc889abd95db9d153eb023fdf85420b58d743",
+    "size": 485662
+   },
+   "uk": {
+    "gzSize": 245209,
+    "path": "dict/uk.txt.gz",
+    "sha256": "6ea29769ded97774328d61b2fba4b2cf8f73a59ace0cd1a8cc40b151c54d819e",
+    "size": 745129
+   },
+   "vi": {
+    "gzSize": 174143,
+    "path": "dict/vi.txt.gz",
+    "sha256": "a7271b0c9b191c1c36af4dd1bf638be79898c72a80b62997a18d864b443320e4",
+    "size": 323132
+   }
+  },
+  "source": "FrequencyWords by Hermit Dave (OpenSubtitles 2018), CC-BY-SA-4.0"
+ },
  "ocr": {
   "det": {
    "gzSize": 4532921,
