@@ -920,9 +920,10 @@ for (const type of ['gesturestart', 'gesturechange', 'gestureend']) document.add
 $('p-shutter').addEventListener('click', () => {
   const video = $('p-video');
   if (!video.videoWidth) return;
-  // Keep only what's inside the guide frame (at the current zoom): less background, fewer false "words".
+  // Capture everything visible in the viewfinder (at the current zoom), so words at the edge of the
+  // guide frame aren't cut in half. The frame is just an aiming guide.
   const view = $('p-live').getBoundingClientRect();
-  const frame = $('p-frame').getBoundingClientRect();
+  const frame = view;
   const cover = Math.max(view.width / video.videoWidth, view.height / video.videoHeight) * digitalZoom;
   const offsetX = (view.width - video.videoWidth * cover) / 2;
   const offsetY = (view.height - video.videoHeight * cover) / 2;
@@ -1008,7 +1009,9 @@ $('p-mode').addEventListener('click', (e) => {
 
 /** Fixes common photo-reading slips that confuse translation (e.g. "Pecoríno" in Italian). */
 function cleanOcrText(text, code) {
-  if (code === 'it') return text.replace(/í/g, 'i').replace(/ú/g, 'u').replace(/á/g, 'a').replace(/ó/g, 'o');
+  // Photo reading sometimes drops the space before a capital: "SalumiNostrani", "dellaValdichiana".
+  if (lang(code)?.script === 'Latin' || lang(code)?.script === 'Cyrillic' || lang(code)?.script === 'Greek') text = text.replace(/(\p{Ll})(\p{Lu}\p{Ll})/gu, '$1 $2').replace(/(\p{L})\(/gu, '$1 (');
+  if (code === 'it') return text.replace(/í/g, 'i').replace(/ú/g, 'u').replace(/á/g, 'a').replace(/ó/g, 'o').replace(/Í/g, 'I').replace(/Ú/g, 'U').replace(/Á/g, 'A').replace(/Ó/g, 'O');
   if (code === 'en' || code === 'nl' || code === 'de') return text.replace(/[íì]/g, 'i').replace(/[áà]/g, 'a');
   return text;
 }
