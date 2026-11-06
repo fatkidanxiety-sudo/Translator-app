@@ -849,19 +849,23 @@ function showCameraFallback() {
   $('p-start').hidden = Boolean(photo);
 }
 
-/** Hides the viewfinder; the camera itself is closed only after a minute away from the Camera screen. */
-function stopCamera({ now = false } = {}) {
+/**
+ * Turns the camera off right away (after a photo, when leaving the Camera screen, or when the app goes
+ * to the background), so iOS's red "camera in use" indicator only shows while the viewfinder is open.
+ */
+function stopCamera() {
+  clearTimeout(cameraReleaseTimer);
   $('p-video').pause();
   $('p-live').hidden = true;
-  clearTimeout(cameraReleaseTimer);
-  const release = () => {
-    stream?.getTracks().forEach((t) => t.stop());
-    stream = null;
-    $('p-video').srcObject = null;
-  };
-  if (now) release();
-  else cameraReleaseTimer = setTimeout(() => currentTab !== 'camera' && release(), 60000);
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  $('p-video').srcObject = null;
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopCamera();
+  else if (currentTab === 'camera' && !photo) startCamera();
+});
 
 // ---- Camera zoom: pinch on the viewfinder or tap 1× 2× 3× 5× ----
 // Uses the camera's real (optical/sensor) zoom when the browser allows it, otherwise zooms the
