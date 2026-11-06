@@ -28,6 +28,7 @@ function getWorker() {
 }
 
 function request(type, payload = {}, onProgress, transfer = []) {
+  touch();
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject, onProgress });
@@ -60,3 +61,17 @@ export function transcribe(audio, languageCode) {
 export const downloadSpeech = (onProgress) => request('download', {}, onProgress && progressTracker(onProgress));
 export const removeSpeech = () => request('remove');
 export const speechReady = () => request('status');
+
+/** Shuts the voice engine down to free memory; it restarts (from the phone's cache) when needed. */
+export function release() {
+  if (!worker || pending.size) return;
+  worker.terminate();
+  worker = null;
+}
+
+// Free the voice engine after a minute without use.
+let idle = null;
+export function touch() {
+  clearTimeout(idle);
+  idle = setTimeout(release, 60000);
+}

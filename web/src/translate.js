@@ -6,9 +6,17 @@ import { lang, routePairs } from './languages.js';
 import { getModelBuffers, loadRegistry } from './models.js';
 
 const WORKER_URL = new URL('./vendor/bergamot/translator-worker.js', document.baseURI).href;
-const MAX_LOADED_PAIRS = 4; // keep memory in check on phones
+const MAX_LOADED_PAIRS = 2; // keep memory in check on phones (a pair through English uses 2)
 
 class ParlivoBacking extends TranslatorBacking {
+  /** Once the engine has a model, drop this thread's copy (it can be re-read from the cache). */
+  getTranslationModel(key, options) {
+    const promise = super.getTranslationModel(key, options);
+    const id = JSON.stringify({ from: key.from, to: key.to });
+    promise.then(() => setTimeout(() => this.buffers.get(id) === promise && this.buffers.delete(id), 5000)).catch(() => {});
+    return promise;
+  }
+
   async loadModelRegistry() {
     const reg = await loadRegistry();
     return Object.entries(reg.pairs).map(([pair, entry]) => {
@@ -99,7 +107,7 @@ export async function translate(text, src, tgt, { onDownloadProgress } = {}) {
   const t = getTranslator();
   backing.onDownloadProgress = onDownloadProgress;
 
-  const lines = text.split('\n');
+  const lines = text.split('\n').map(sentenceCase);
   const results = await Promise.all(
     lines.map((line) =>
       line.trim()
@@ -108,6 +116,16 @@ export async function translate(text, src, tgt, { onDownloadProgress } = {}) {
     ),
   );
   return results.join('\n');
+}
+
+/** Signs are often ALL CAPS, which translation models handle badly; "FUMARE O USARE" → "Fumare o usare". */
+function sentenceCase(line) {
+  const letters = line.match(/\p{L}/gu) ?? [];
+  if (letters.length < 4) return line;
+  const upper = letters.filter((c) => c !== c.toLocaleLowerCase()).length;
+  if (upper / letters.length < 0.85) return line;
+  const lower = line.toLocaleLowerCase();
+  return lower.replace(/\p{L}/u, (c) => c.toLocaleUpperCase());
 }
 
 /** Translates many short strings at once (phrasebook, photo lines). */

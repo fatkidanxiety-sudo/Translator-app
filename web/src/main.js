@@ -4,7 +4,8 @@ import { translate, translateMany, warmUp } from './translate.js';
 import * as voice from './engine.js';
 import { detectLanguage } from './detect.js';
 import { Recorder, speak, stopSpeaking } from './speech.js';
-import { autoRead, tesseractLangsFor, readText, prepareOcr } from './ocr.js';
+import { autoRead, tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
+import { cleanForOcr } from './ocr-prep.js';
 import { settings, saveSettings, getHistory, addHistory, updateHistory, deleteHistory, clearHistory, getPhraseCache, setPhraseCache } from './store.js';
 import { PHRASE_CATEGORIES } from './phrases.js';
 
@@ -209,6 +210,11 @@ function showTab(name) {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === `tab-${name}`));
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   $('page-title').textContent = TITLES[name];
+  try {
+    sessionStorage.setItem('tab', name);
+  } catch {
+    /* ignore */
+  }
   if (name === 'history') renderHistory();
   if (name === 'camera') enterCamera();
   window.scrollTo({ top: 0 });
@@ -520,6 +526,7 @@ async function ensureSpeechModel() {
 async function startRecording(owner) {
   if (!(await ensureSpeechModel())) return false;
   stopSpeaking();
+  releaseOcr(); // the phone has limited memory: free the camera engine while listening
   try {
     await recorder.start();
     micOwner = owner;
@@ -582,6 +589,7 @@ $('t-mic').addEventListener('click', async () => {
 const messages = [];
 let facing = false;
 let convBusy = false;
+let convStage = 'Understanding speech…';
 const sideLang = (side) => (side === 'a' ? settings.convA : settings.convB);
 
 function renderTalkSides() {
@@ -625,7 +633,7 @@ function renderTranscript() {
   if (convBusy) {
     const el = document.createElement('div');
     el.className = 'bubble a listening';
-    el.innerHTML = '<p class="orig"><span class="spinner" style="width:16px;height:16px;border-width:2px"></span> Translating…</p>';
+    el.innerHTML = `<p class="orig"><span class="spinner" style="width:16px;height:16px;border-width:2px"></span> ${convStage}</p>`;
     box.appendChild(el);
   }
   box.lastElementChild?.scrollIntoView?.({ block: 'end', behavior: 'smooth' });
@@ -654,6 +662,7 @@ $('tab-talk').addEventListener('click', async (e) => {
   const side = mic.dataset.mic;
   if (micOwner === side) {
     convBusy = true;
+    convStage = 'Understanding speech…';
     renderTranscript();
     document.querySelectorAll(`[data-mic="${side}"]`).forEach((b) => setMicState(b, 'working'));
     try {
@@ -662,6 +671,8 @@ $('tab-talk').addEventListener('click', async (e) => {
       const heard = await finishRecording(from);
       if (!heard) toast('Didn’t catch that. Try again.');
       else {
+        convStage = 'Translating…';
+        renderTranscript();
         const translated = await translate(heard, from, to);
         messages.push({ side, original: heard, translated, from, to });
         if (settings.convAutoSpeak) speak(translated, to, settings.speechRate);
@@ -756,11 +767,21 @@ function stopCamera() {
 $('p-shutter').addEventListener('click', () => {
   const video = $('p-video');
   if (!video.videoWidth) return;
-  const scale = Math.min(1, 1800 / Math.max(video.videoWidth, video.videoHeight));
+  // Keep only what's inside the guide frame: less background, fewer false "words", faster reading.
+  const view = $('p-live').getBoundingClientRect();
+  const frame = $('p-frame').getBoundingClientRect();
+  const cover = Math.max(view.width / video.videoWidth, view.height / video.videoHeight);
+  const offsetX = (view.width - video.videoWidth * cover) / 2;
+  const offsetY = (view.height - video.videoHeight * cover) / 2;
+  const sx = Math.max(0, (frame.left - view.left - offsetX) / cover);
+  const sy = Math.max(0, (frame.top - view.top - offsetY) / cover);
+  const sw = Math.min(video.videoWidth - sx, frame.width / cover);
+  const sh = Math.min(video.videoHeight - sy, frame.height / cover);
+  const scale = Math.min(1, 1600 / Math.max(sw, sh));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(video.videoWidth * scale);
-  canvas.height = Math.round(video.videoHeight * scale);
-  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  canvas.width = Math.round(sw * scale);
+  canvas.height = Math.round(sh * scale);
+  canvas.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
   stopCamera();
   showPhoto(canvas);
 });
@@ -772,7 +793,7 @@ for (const id of ['p-file', 'p-file-live', 'p-file-again']) {
     if (!file) return;
     try {
       stopCamera();
-      showPhoto(await fileToCanvas(file, 1800));
+      showPhoto(await fileToCanvas(file, 1600));
     } catch {
       toast('Couldn’t open that photo.');
     }
@@ -841,19 +862,32 @@ async function processPhoto() {
   $('p-lines').hidden = true;
   const status = (t) => run === photoRun && ($('p-busy-text').textContent = t);
 
+  voice.release(); // free the voice engine while reading the photo
   try {
     status('Reading text…');
     const preferred = [settings.target, settings.lastOther, ...models.installedPacks()].filter(Boolean);
-    let { lines, confidence, script, pass } =
+    const loading = (p, s) => /load/i.test(s) && status('Preparing text reading…');
+    const read = (image, cleaned) =>
       settings.source === 'auto'
-        ? await autoRead(current.canvas, preferred, status)
-        : await readText(current.canvas, tesseractLangsFor(settings.source), (p, s) => /load/i.test(s) && status('Preparing text reading…'));
+        ? autoRead(image, preferred, status, { cleaned })
+        : readText(image, tesseractLangsFor(settings.source), loading, { cleaned });
+    // Read a cleaned-up copy (texture and specks removed); fall back to the original photo.
+    await new Promise((r) => setTimeout(r, 30)); // let the "Reading text…" overlay paint first
+    const cleanedImage = cleanForOcr(current.canvas);
+    const image = cleanedImage?.canvas ?? current.canvas;
+    let result = await read(image, false);
     if (run !== photoRun) return;
+    if (cleanedImage && (!result.lines.length || result.confidence < 50)) {
+      const original = await read(current.canvas, false);
+      if (run !== photoRun) return;
+      if (original.confidence > result.confidence + 8 || !result.lines.length) result = original;
+    }
+    let { lines, confidence, script, pass } = result;
     // A mixed-language pass found the language: read once more with just that language for accuracy.
     if (settings.source === 'auto' && pass && lines.length) {
       const guess = detectLanguage(lines.map((l) => l.text).join(' '));
       if (guess && lang(guess)?.tess && !(pass.length === 1 && pass[0] === lang(guess).tess)) {
-        const again = await readText(current.canvas, tesseractLangsFor(guess));
+        const again = await readText(image, tesseractLangsFor(guess));
         if (run !== photoRun) return;
         if (again.confidence >= confidence - 5 && again.lines.length) ({ lines, confidence } = again);
       }
@@ -1344,6 +1378,23 @@ if (isIOS && !standalone && !localStorage.getItem('installTipDismissed')) $('ins
 $('install-tip-close').addEventListener('click', () => {
   $('install-tip').hidden = true;
   localStorage.setItem('installTipDismissed', '1');
+});
+
+// If iOS had to reload the app (e.g. low memory), come back to the same screen and text.
+try {
+  const savedText = sessionStorage.getItem('tInput');
+  if (savedText) input.value = savedText;
+  const savedTab = sessionStorage.getItem('tab');
+  if (savedTab && savedTab !== 'translate' && TITLES[savedTab]) setTimeout(() => showTab(savedTab), 0);
+} catch {
+  /* ignore */
+}
+input.addEventListener('input', () => {
+  try {
+    sessionStorage.setItem('tInput', input.value);
+  } catch {
+    /* ignore */
+  }
 });
 
 renderTranslateLangs();

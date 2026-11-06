@@ -337,3 +337,12 @@ button, label.btn, .lang-btn, .list-row { touch-action: manipulation; -webkit-us
 .popup .p-trans { font-size: 22px; font-weight: 700; margin: 2px 0 6px; }
 .popup .p-line { font-size: 14px; color: var(--text-2); margin: 0; border-top: 0.5px solid var(--line); padding-top: 6px; }
 .popup .row { justify-content: space-between; }
+
+/* Viewfinder guide frame: only text inside it is read */
+.vf-frame { position: absolute; left: 7%; right: 7%; top: 12%; bottom: 25%; border-radius: 14px; box-shadow: 0 0 0 9999px rgba(0,0,0,0.38); }
+.vf-frame i { position: absolute; width: 28px; height: 28px; border: 4px solid #fff; }
+.vf-frame i:nth-child(1) { left: -2px; top: -2px; border-right: 0; border-bottom: 0; border-top-left-radius: 14px; }
+.vf-frame i:nth-child(2) { right: -2px; top: -2px; border-left: 0; border-bottom: 0; border-top-right-radius: 14px; }
+.vf-frame i:nth-child(3) { left: -2px; bottom: -2px; border-right: 0; border-top: 0; border-bottom-left-radius: 14px; }
+.vf-frame i:nth-child(4) { right: -2px; bottom: -2px; border-left: 0; border-top: 0; border-bottom-right-radius: 14px; }
+.vf-hint { z-index: 1; }
