@@ -1014,9 +1014,53 @@ $('p-mode').addEventListener('click', (e) => {
 });
 
 /** Fixes common photo-reading slips that confuse translation (e.g. "Pecoríno" in Italian). */
+const PRICE = /(?:€\s*)?[\dIlOo]{1,4}[.,][\dOo]{2}(?:\s*€)?/;
+
+/** Digits misread as letters inside prices: "I6.00" → "16.00", "2O,50" → "20,50". */
+const fixDigits = (price) => price.replace(/[Il]/g, '1').replace(/[Oo]/g, '0');
+
+/**
+ * Splits a menu line into the words to translate and the prices around them, so the translator only
+ * sees words ("ZUCCA - 14.00" → "Zucca" + " 14.00").
+ */
+function splitPrices(text) {
+  let core = text;
+  let after = '';
+  let before = '';
+  // Peel prices and allergen numbers like "(1,3,9)" off the end, keeping them for afterwards.
+  for (let guard = 0; guard < 4; guard++) {
+    const tail = core.match(new RegExp(`[\\s\\-–—:.]*(${PRICE.source}|\\(\\s*[\\d\\s,;.]+\\))\\s*$`));
+    if (!tail || !/\d/.test(tail[1]) || tail.index === 0) break;
+    after = ` ${tail[1].startsWith('(') ? tail[1] : fixDigits(tail[1])}${after}`;
+    core = core.slice(0, tail.index);
+  }
+  const head = core.match(new RegExp(`^\\s*(${PRICE.source})[\\s\\-–—:]*`));
+  if (head && /\d/.test(head[1]) && head[0].length < core.length) {
+    before = `${fixDigits(head[1])} `;
+    core = core.slice(head[0].length);
+  }
+  return { before, core, after };
+}
+
+/**
+ * Menus and signs capitalize words in ways that confuse translation ("Gnocchi Di Patate" →
+ * "Gnocchi Di Poate"). The translator does best with sentence case: "Gnocchi di patate" →
+ * "Potato dumplings". Applies to alphabets with capital letters.
+ */
+function normalizeCase(text) {
+  let first = true;
+  return text.replace(/\p{L}+/gu, (w) => {
+    const out = first ? w[0].toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase();
+    first = false;
+    return out;
+  });
+}
+
 function cleanOcrText(text, code) {
+  text = text.replace(/^[\s'"`´‘’“”.,;:·•*_\-–—]+/u, ''); // stray marks before the first word
   // Photo reading sometimes drops the space before a capital: "SalumiNostrani", "dellaValdichiana".
   if (lang(code)?.script === 'Latin' || lang(code)?.script === 'Cyrillic' || lang(code)?.script === 'Greek') text = text.replace(/(\p{Ll})(\p{Lu}\p{Ll})/gu, '$1 $2').replace(/(\p{L})\(/gu, '$1 (');
+  if (['Latin', 'Cyrillic', 'Greek'].includes(lang(code)?.script)) text = normalizeCase(text);
   if (code === 'ru' || code === 'uk') {
     // A word made only of Latin letters that look Cyrillic is a misread ("Kacca" → "Касса").
     const map = { A: 'А', a: 'а', B: 'В', C: 'С', c: 'с', E: 'Е', e: 'е', H: 'Н', K: 'К', k: 'к', M: 'М', O: 'О', o: 'о', P: 'Р', p: 'р', T: 'Т', X: 'Х', x: 'х', y: 'у', Y: 'У' };
@@ -1067,7 +1111,9 @@ async function processPhoto() {
     const hasLetters = (t) => (t.match(/\p{L}/gu) ?? []).length >= 3 || /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(t);
     let tgt = settings.target;
     let src = settings.source;
-    let lineLangs = lines.map(() => src);
+    // Even with the language chosen, leave lines that are clearly already in your language
+    // (menus often print an English line under each Italian one).
+    let lineLangs = lines.map((l) => (src !== 'auto' && l.text.length >= 12 && detectLanguage(l.text) === settings.target && settings.target !== src ? settings.target : src));
     if (src === 'auto') {
       lineLangs = lines.map((l) => (hasLetters(l.text) ? detectLanguage(l.text) : null));
       const weight = new Map();
@@ -1121,15 +1167,22 @@ async function processPhoto() {
       groups.get(code).push(i);
     });
     for (const [code, indices] of groups) {
-      const out = await translateMany(indices.map((i) => cleanOcrText(lines[i].text, code)), code, tgt);
+      const parts = indices.map((i) => splitPrices(lines[i].text));
+      const out = await translateMany(parts.map((p) => cleanOcrText(p.core, code)), code, tgt);
       indices.forEach((i, k) => {
-        const original = lines[i].text;
-        const result = out[k] ?? original;
-        // Unknown single words (names, misreads) can make the model invent a phrase: keep those as they are.
+        const original = parts[k].core;
+        const translatedCore = out[k] ?? original;
         const words = original.trim().split(/\s+/).length;
-        translated[i] = words <= 2 && result.length > original.length * 2.2 + 4 ? original : result;
+        // Unknown single words (names, misreads) can make the model invent a phrase: keep those as they are.
+        const stutter = words === 1 && translatedCore.toLowerCase().startsWith(original.toLowerCase()) && translatedCore.length > original.length; // "Pecorinorino"
+        const core = stutter || (words <= 2 && translatedCore.length > original.length * 2.2 + 4) ? original : translatedCore;
+        translated[i] = `${parts[k].before}${core}${parts[k].after}`.trim();
       });
     }
+    // Lines that are only prices: just fix misread digits.
+    lines.forEach((l, i) => {
+      if (translated[i] === l.text && PRICE.test(l.text) && !/\p{L}{3,}/u.test(l.text.replace(/[IlOo](?=[\dIlOo]*[.,]\d)/g, ''))) translated[i] = fixDigits(l.text);
+    });
     if (run !== photoRun) return;
     current.lines = lines.map((l, i) => ({ ...l, translated: translated[i], same: translated[i] === l.text }));
     drawOverlay();
@@ -1152,16 +1205,17 @@ function drawOverlay() {
   const img = $('p-image');
   if (!photo?.lines.length) return;
   const scale = img.clientWidth / photo.canvas.width;
+  // Each label covers exactly its original line; the font shrinks to fit instead of spilling over.
+  const measure = (drawOverlay.ctx ??= document.createElement('canvas').getContext('2d'));
+  measure.font = '600 100px -apple-system, system-ui, sans-serif';
   const boxes = photo.lines.filter((l) => !l.same).map(({ bbox, translated }) => {
-    const rawH = (bbox.y1 - bbox.y0) * scale;
-    const padX = rawH * 0.25;
-    const padY = rawH * 0.22;
-    const left = Math.max(0, bbox.x0 * scale - padX);
-    const top = Math.max(0, bbox.y0 * scale - padY);
-    const w = Math.min(img.clientWidth - left, (bbox.x1 - bbox.x0) * scale + padX * 2);
-    const h = rawH + padY * 2;
-    const fontSize = Math.max(8, Math.min(rawH * 0.85, (w / Math.max(4, translated.length)) * 1.8));
-    return `<div class="box" dir="auto" style="left:${left}px;top:${top}px;width:${Math.max(w, 24)}px;min-height:${h}px;font-size:${fontSize}px">${esc(translated)}</div>`;
+    const h = (bbox.y1 - bbox.y0) * scale;
+    const w = (bbox.x1 - bbox.x0) * scale;
+    const left = Math.max(0, bbox.x0 * scale);
+    const top = Math.max(0, bbox.y0 * scale);
+    const textWidthAt100 = Math.max(1, measure.measureText(translated).width);
+    const fontSize = Math.max(7, Math.min(h * 0.72, ((w - 4) / textWidthAt100) * 100));
+    return `<div class="box" dir="auto" style="left:${left}px;top:${top}px;width:${Math.max(w, 20)}px;height:${h}px;font-size:${fontSize}px">${esc(translated)}</div>`;
   });
   const words = photo.lines.flatMap((line, li) =>
     line.words.map((w, wi) => {

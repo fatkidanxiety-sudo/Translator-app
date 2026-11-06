@@ -33,7 +33,7 @@ const strip = (s) => s.normalize('NFD').replace(/\p{M}/gu, '');
 
 // Pairs of letters the camera confuses.
 const LOOKALIKE = new Map();
-for (const pair of ['ft', 'li', 'l1', 'ij', 'ce', 'oa', 'uv', 'nh', 'bh', 'gq', 'mn', 'rn', 'oc', 'tl', 'fl', 'kx', 'eo', 'ir']) {
+for (const pair of ['ft', 'li', 'l1', 'ij', 'ce', 'oa', 'uv', 'nh', 'bh', 'gq', 'mn', 'rn', 'oc', 'tl', 'fl', 'kx', 'eo', 'ir', 'cg', 'ao']) {
   const [a, b] = pair;
   if (!LOOKALIKE.has(a)) LOOKALIKE.set(a, new Set());
   if (!LOOKALIKE.has(b)) LOOKALIKE.set(b, new Set());

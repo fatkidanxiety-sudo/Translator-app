@@ -114,7 +114,7 @@ function mergeRows(lines, joiner) {
       const rh = r.bbox.y1 - r.bbox.y0;
       const overlap = Math.min(r.bbox.y1, line.bbox.y1) - Math.max(r.bbox.y0, line.bbox.y0);
       const gap = line.bbox.x0 - r.bbox.x1;
-      return overlap > Math.min(h, rh) * 0.6 && h / rh > 0.6 && h / rh < 1.6 && gap > -h && gap < h * 1.1;
+      return overlap > Math.min(h, rh) * 0.6 && h / rh > 0.7 && h / rh < 1.4 && gap > -h * 0.3 && gap < h * 0.6; // separate dishes side by side stay separate
     });
     if (row) {
       const chars = row.text.length + line.text.length;
