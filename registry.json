@@ -1,4 +1,128 @@
 {
+ "ocr": {
+  "det": {
+   "gzSize": 4532921,
+   "path": "ocr/det.onnx.gz",
+   "sha256": "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d",
+   "size": 4826518
+  },
+  "rec": {
+   "arabic": {
+    "dict": {
+     "gzSize": 376,
+     "path": "ocr/dict-arabic.json.gz",
+     "sha256": "0a9c4deb64b311d53d9412cc2ae29255ec1f2ca22cb4e89269a44288f70e7e65",
+     "size": 888
+    },
+    "model": {
+     "gzSize": 8124586,
+     "path": "ocr/rec-arabic.onnx.gz",
+     "sha256": "7982d371612785238fd99080cff36354deaec84fdc6ff7da9c82af4243fa0c9a",
+     "size": 8978664
+    }
+   },
+   "cjk": {
+    "dict": {
+     "gzSize": 49383,
+     "path": "ocr/dict-cjk.json.gz",
+     "sha256": "c9007c1e471102735d65ed5e6bf2c197f4c3b926f7005c61143ac9c37c25adce",
+     "size": 129163
+    },
+    "model": {
+     "gzSize": 14036891,
+     "path": "ocr/rec-cjk.onnx.gz",
+     "sha256": "da72dc72ca4dc220df0dfde68c1dedc31c58d3e76a25871122e5056227d50092",
+     "size": 16534782
+    }
+   },
+   "eslav": {
+    "dict": {
+     "gzSize": 1289,
+     "path": "ocr/dict-eslav.json.gz",
+     "sha256": "dc16ef48b79ddfdde83fbfb43267d756a696cf47fdd8f529fab2bb7f0655a0fc",
+     "size": 3216
+    },
+    "model": {
+     "gzSize": 7297759,
+     "path": "ocr/rec-eslav.onnx.gz",
+     "sha256": "dc6bf0e855247decce214ba6dae5bc135fa0ad725a5918a7fcfb59fad6c9cdee",
+     "size": 7870092
+    }
+   },
+   "greek": {
+    "dict": {
+     "gzSize": 863,
+     "path": "ocr/dict-greek.json.gz",
+     "sha256": "4f99131aa01d4c0ee35f2f7dcae95dc411d830326945ff6931764b4936dce6b8",
+     "size": 2166
+    },
+    "model": {
+     "gzSize": 7205560,
+     "path": "ocr/rec-greek.onnx.gz",
+     "sha256": "13373f736dbb229e96945fc41c2573403d91503b0775c7b7294839e0c5f3a7a3",
+     "size": 7791200
+    }
+   },
+   "hindi": {
+    "dict": {
+     "gzSize": 388,
+     "path": "ocr/dict-hindi.json.gz",
+     "sha256": "e132e1d4051e84c4108e55390e75be8e34e8f4321cfa78164e83455e7320c4c0",
+     "size": 1009
+    },
+    "model": {
+     "gzSize": 8272672,
+     "path": "ocr/rec-hindi.onnx.gz",
+     "sha256": "43df175fa3c877fbf7bcc4e5bd1e203e24ec450cd3ea96c9e802c86e39a4d4cf",
+     "size": 8980224
+    }
+   },
+   "korean": {
+    "dict": {
+     "gzSize": 27049,
+     "path": "ocr/dict-korean.json.gz",
+     "sha256": "e600744eabcf1db6513518f7e09105cdb746ee0504ef110b25478147d9f0aa81",
+     "size": 83288
+    },
+    "model": {
+     "gzSize": 8285805,
+     "path": "ocr/rec-korean.onnx.gz",
+     "sha256": "322f140154c820fcb83c3d24cfe42c9ec70dd1a1834163306a7338136e4f1eaa",
+     "size": 13401252
+    }
+   },
+   "latin": {
+    "dict": {
+     "gzSize": 1198,
+     "path": "ocr/dict-latin.json.gz",
+     "sha256": "ec2af4282787af85ff59183c4ca178b22b6b0195b5cdcf59da4cf8e276b0287b",
+     "size": 3142
+    },
+    "model": {
+     "gzSize": 7260437,
+     "path": "ocr/rec-latin.onnx.gz",
+     "sha256": "614ffc2d6d3902d360fad7f1b0dd455ee45e877069d14c4e51a99dc4ef144409",
+     "size": 7862832
+    }
+   },
+   "thai": {
+    "dict": {
+     "gzSize": 1269,
+     "path": "ocr/dict-thai.json.gz",
+     "sha256": "b62ede697a18b3e6259fa866cb32e70bbd7e2165f87e1ebc8c60ee3e69e866c7",
+     "size": 3341
+    },
+    "model": {
+     "gzSize": 7273474,
+     "path": "ocr/rec-thai.onnx.gz",
+     "sha256": "2b6e56b1872200349e227574c25aeb0e0f9af9b8356e9ff5f75ac543a535669a",
+     "size": 7873480
+    }
+   }
+  },
+  "source": "PaddleOCR PP-OCRv5 mobile (Apache-2.0); non-CJK recognizers converted to ONNX by monkt/paddleocr-onnx",
+  "version": 1
+ },
  "pairs": {
   "ar-en": {
    "files": {
