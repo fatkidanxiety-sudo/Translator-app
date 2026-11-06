@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Offline Translator</title>
+  <meta name="description" content="Translate text, voice, photos and conversations with no internet connection.">
+  <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Translator">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="page-title">Translate</h1>
+    <span id="net-status" class="net" hidden>Offline</span>
+    <button id="open-settings" class="icon-btn" aria-label="Settings">
+      <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <!-- ============ TRANSLATE ============ -->
+    <section id="tab-translate" class="tab active" aria-label="Translate">
+      <div class="card install-tip" id="install-tip" hidden>
+        <p><strong>Install this app:</strong> tap the Share button <span aria-hidden="true">⬆︎</span> in Safari, then <strong>Add to Home Screen</strong>. It then opens full-screen, like a regular app.</p>
+        <button class="text-btn" id="install-tip-close">Got it</button>
+      </div>
+      <div class="lang-bar">
+        <button class="lang-btn" id="t-source"></button>
+        <button class="swap-btn" id="t-swap" aria-label="Swap languages">
+          <svg viewBox="0 0 24 24"><path d="M7 7h13l-4-4M17 17H4l4 4"/></svg>
+        </button>
+        <button class="lang-btn" id="t-target"></button>
+      </div>
+      <p class="detected" id="t-detected" hidden></p>
+
+      <div class="card input-card">
+        <textarea id="t-input" placeholder="Enter text" rows="4" autocapitalize="sentences"></textarea>
+        <div class="row">
+          <button class="mic-btn small" id="t-mic" aria-label="Speak">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <button class="icon-btn" id="t-paste" aria-label="Paste">
+            <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+          </button>
+          <span class="spacer"></span>
+          <span class="count" id="t-count">0</span>
+          <button class="icon-btn" id="t-clear" aria-label="Clear" hidden>
+            <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="download-card card" id="t-download" hidden>
+        <p id="t-download-text"></p>
+        <div class="progress" hidden><div></div></div>
+        <button class="btn" id="t-download-btn">Download</button>
+      </div>
+
+      <button class="btn primary wide" id="t-go">Translate</button>
+
+      <div class="card output-card" id="t-output-card" hidden>
+        <p class="out-lang" id="t-out-lang"></p>
+        <p class="output" id="t-output"></p>
+        <div class="row actions">
+          <button class="icon-btn" id="t-speak" aria-label="Speak translation">
+            <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+          </button>
+          <button class="icon-btn" id="t-copy" aria-label="Copy translation">
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          <button class="icon-btn" id="t-share" aria-label="Share translation">
+            <svg viewBox="0 0 24 24"><path d="M12 3v13M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>
+          </button>
+          <span class="spacer"></span>
+          <button class="icon-btn star" id="t-fav" aria-label="Add to favorites">
+            <svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2Z"/></svg>
+          </button>
+        </div>
+      </div>
+      <p class="badge" id="t-badge"></p>
+    </section>
+
+    <!-- ============ CONVERSATION ============ -->
+    <section id="tab-talk" class="tab" aria-label="Conversation">
+      <div class="partner" id="c-partner" hidden>
+        <p class="partner-text" id="c-partner-text"></p>
+        <div class="talk-side" data-side="b-top"></div>
+      </div>
+      <div class="transcript" id="c-transcript">
+        <div class="empty" id="c-empty">
+          <div class="empty-icon">💬</div>
+          <h2>Start a conversation</h2>
+          <p>Tap a microphone, speak, then tap again. The translation is spoken in the other language.</p>
+        </div>
+      </div>
+      <div class="talk-controls">
+        <div class="talk-side" data-side="a"></div>
+        <div class="talk-side" data-side="b"></div>
+      </div>
+      <div class="talk-tools">
+        <button class="btn small" id="c-facing">Face-to-face</button>
+        <button class="btn small" id="c-clear">Clear</button>
+      </div>
+    </section>
+
+    <!-- ============ CAMERA ============ -->
+    <section id="tab-camera" class="tab" aria-label="Camera">
+      <div class="lang-bar">
+        <button class="lang-btn" id="p-source"></button>
+        <span class="arrow">→</span>
+        <button class="lang-btn" id="p-target"></button>
+      </div>
+      <div class="photo-wrap" id="p-photo" hidden>
+        <img id="p-image" alt="Photo to translate">
+        <div class="overlay" id="p-overlay"></div>
+        <div class="busy" id="p-busy" hidden><div class="spinner"></div><span id="p-busy-text">Finding text…</span><div class="progress"><div></div></div></div>
+      </div>
+      <div class="empty" id="p-empty">
+        <div class="empty-icon">📷</div>
+        <h2>Translate text in photos</h2>
+        <p>Signs, menus, labels. Text is found and translated on your phone — nothing is uploaded.</p>
+      </div>
+      <div class="segmented" id="p-toggle" hidden>
+        <button class="active" data-show="translated">Translation</button>
+        <button data-show="original">Original</button>
+      </div>
+      <label class="btn primary wide file-btn">
+        <input type="file" accept="image/*" id="p-file">
+        Take or Choose Photo
+      </label>
+      <div class="card" id="p-lines" hidden></div>
+    </section>
+
+    <!-- ============ PHRASEBOOK ============ -->
+    <section id="tab-phrases" class="tab" aria-label="Phrasebook">
+      <div id="ph-home">
+        <button class="lang-btn wide" id="ph-lang"></button>
+        <div class="list" id="ph-categories"></div>
+      </div>
+      <div id="ph-category" hidden>
+        <button class="back" id="ph-back">‹ Phrasebook</button>
+        <h2 id="ph-title"></h2>
+        <div class="progress" id="ph-progress" hidden><div></div></div>
+        <div class="list" id="ph-list"></div>
+      </div>
+    </section>
+
+    <!-- ============ HISTORY ============ -->
+    <section id="tab-history" class="tab" aria-label="History">
+      <div class="segmented" id="h-filter">
+        <button class="active" data-filter="all">All</button>
+        <button data-filter="fav">Favorites</button>
+      </div>
+      <input type="search" id="h-search" placeholder="Search" class="search">
+      <div class="list" id="h-list"></div>
+      <div class="empty" id="h-empty" hidden></div>
+      <button class="btn danger-text wide" id="h-clear">Clear History (Keep Favorites)</button>
+    </section>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button class="active" data-tab="translate">
+      <svg viewBox="0 0 24 24"><path d="M4 5h9M8.5 3v2M6 5c.5 3 2.5 6 6 7.5M11 5c-.5 3-3 6.5-7 8"/><path d="m12 21 4.5-10 4.5 10M13.8 17.5h5.4"/></svg>
+      <span>Translate</span>
+    </button>
+    <button data-tab="talk">
+      <svg viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H8l-4 3v-3.2A2 2 0 0 1 3 11V5Z"/><path d="M19 8h0a2 2 0 0 1 2 2v6a2 2 0 0 1-1 1.7V21l-3.5-3H11a2 2 0 0 1-2-2"/></svg>
+      <span>Conversation</span>
+    </button>
+    <button data-tab="camera">
+      <svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2.5L9 4h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z"/><circle cx="12" cy="13" r="4"/></svg>
+      <span>Camera</span>
+    </button>
+    <button data-tab="phrases">
+      <svg viewBox="0 0 24 24"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5v-17Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></svg>
+      <span>Phrasebook</span>
+    </button>
+    <button data-tab="history">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+      <span>History</span>
+    </button>
+  </nav>
+
+  <!-- Language picker -->
+  <dialog id="picker" class="sheet">
+    <div class="sheet-head">
+      <h2 id="picker-title">Language</h2>
+      <button class="text-btn" id="picker-close">Done</button>
+    </div>
+    <input type="search" id="picker-search" placeholder="Search languages" class="search">
+    <div class="list" id="picker-list"></div>
+  </dialog>
+
+  <!-- Settings -->
+  <dialog id="settings" class="sheet">
+    <div class="sheet-head">
+      <h2>Settings</h2>
+      <button class="text-btn" id="settings-close">Done</button>
+    </div>
+    <div class="sheet-body">
+      <h3>Offline languages</h3>
+      <p class="hint">Download languages while you’re on Wi-Fi. After that, translation works in airplane mode. Each language is about 230 MB (both directions with English).</p>
+      <p class="hint" id="storage-info"></p>
+      <div class="list" id="packs"></div>
+
+      <h3>Voice input</h3>
+      <div class="list" id="speech-pack"></div>
+
+      <h3>Speech</h3>
+      <div class="list">
+        <label class="list-row toggle"><span>Speak translations automatically</span><input type="checkbox" id="s-autospeak"></label>
+        <label class="list-row toggle"><span>Speak in conversation mode</span><input type="checkbox" id="s-convspeak"></label>
+        <div class="list-row column">
+          <span>Speaking speed</span>
+          <input type="range" id="s-rate" min="0.5" max="1.5" step="0.1">
+        </div>
+      </div>
+
+      <h3>Privacy</h3>
+      <div class="list">
+        <label class="list-row toggle"><span>Save translation history</span><input type="checkbox" id="s-history"></label>
+        <button class="list-row danger-text" id="s-delete-all">Delete All History and Favorites</button>
+      </div>
+      <p class="hint">Everything runs on this device. Your text, voice and photos are never uploaded. History is stored only in this browser.</p>
+
+      <h3>About</h3>
+      <p class="hint">Translation: Opus-MT models (Helsinki-NLP, CC-BY 4.0) running with Transformers.js. Voice: OpenAI Whisper (base). Photos: Tesseract OCR. Voices: built into iOS.</p>
+      <p class="hint" id="version"></p>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

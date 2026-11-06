@@ -1,0 +1,19 @@
+{
+  "name": "offline-translator-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Offline translator web app (installable on iPhone via Add to Home Screen)",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node serve.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "franc": "6.2.0",
+    "tesseract.js": "6.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}
