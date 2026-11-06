@@ -101,6 +101,40 @@
 
     <!-- ============ CONVERSATION ============ -->
     <section id="tab-talk" class="tab" aria-label="Conversation">
+      <div class="segmented" id="c-mode">
+        <button class="active" data-mode="talk">💬 Conversation</button>
+        <button data-mode="listen">👂 Listen</button>
+      </div>
+
+      <!-- Listen: live subtitles of what people nearby are saying -->
+      <div id="c-listen" class="listen" hidden>
+        <div class="lang-bar">
+          <button class="lang-btn" id="l-source"></button>
+          <span class="arrow">→</span>
+          <button class="lang-btn" id="l-target"></button>
+        </div>
+        <div class="listen-feed" id="l-feed">
+          <div class="empty" id="l-empty">
+            <div class="empty-icon">👂</div>
+            <h2>Listen to people nearby</h2>
+            <p>Tap Listen and lay your phone near the speakers. What they say appears here, translated, as they talk. Nothing is recorded or saved.</p>
+          </div>
+        </div>
+        <div class="listen-live" id="l-live" hidden>
+          <span class="listen-dot"></span><span id="l-live-text">Listening…</span>
+        </div>
+        <div class="listen-controls">
+          <button class="icon-btn" id="l-speak" aria-label="Read translations aloud" title="Read aloud">
+            <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+          </button>
+          <button class="listen-btn" id="l-toggle"><span id="l-toggle-text">Listen</span></button>
+          <button class="icon-btn" id="l-clear" aria-label="Clear">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="c-convo" class="convo">
       <div class="partner" id="c-partner" hidden>
         <p class="partner-text" id="c-partner-text"></p>
         <div class="talk-side" data-side="b-top"></div>
@@ -119,6 +153,7 @@
       <div class="talk-tools">
         <button class="btn small" id="c-facing">Face-to-face</button>
         <button class="btn small" id="c-clear">Clear</button>
+      </div>
       </div>
     </section>
 

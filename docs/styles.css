@@ -355,3 +355,19 @@ html { touch-action: manipulation; }
 .vf-zoom button { min-width: 38px; height: 32px; padding: 0 8px; border-radius: 999px; color: #fff; font-size: 13px; font-weight: 700; }
 .vf-zoom button.active { background: rgba(255,255,255,0.92); color: #000; }
 .vf-zoom-level { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.55); color: #fff; font-size: 22px; font-weight: 800; padding: 8px 16px; border-radius: 14px; z-index: 1; pointer-events: none; }
+
+/* Conversation / Listen */
+.convo { display: flex; flex-direction: column; gap: 14px; flex: 1; }
+.listen { display: flex; flex-direction: column; gap: 12px; flex: 1; }
+.listen-feed { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 40vh; }
+.listen-item { background: var(--card); border-radius: 16px; padding: 12px 14px; animation: fade-in 0.25s ease-out; }
+.listen-item .orig { font-size: 14px; color: var(--text-2); margin: 0 0 4px; }
+.listen-item .trans { font-size: 20px; font-weight: 600; margin: 0; }
+.listen-item .meta { font-size: 11px; color: var(--text-3); margin-top: 4px; }
+.listen-live { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 14px; background: var(--accent-soft); color: var(--text-2); font-size: 15px; font-style: italic; }
+.listen-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+.listen-controls { position: sticky; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px); display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 6px 4px; background: var(--bg); }
+.listen-btn { flex: 1; height: 58px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 19px; font-weight: 700; }
+.listen-btn.on { background: var(--red); }
+#l-speak.on { background: var(--accent-soft); }
+#l-speak:not(.on) { color: var(--text-3); }

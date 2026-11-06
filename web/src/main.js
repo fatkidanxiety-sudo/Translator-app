@@ -3,7 +3,7 @@ import * as models from './models.js';
 import { translate, translateMany, warmUp } from './translate.js';
 import * as voice from './engine.js';
 import { detectLanguage } from './detect.js';
-import { Recorder, LiveRecognizer, speak, stopSpeaking } from './speech.js';
+import { Recorder, LiveRecognizer, ContinuousListener, speak, stopSpeaking } from './speech.js';
 import { tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
 import { cleanForOcr } from './ocr-prep.js';
 import { readPhoto, releaseCameraReader, warmCameraReader, ocrScriptFor } from './camera-ocr.js';
@@ -222,6 +222,7 @@ function showTab(name) {
   if (name === currentTab) return;
   if (currentTab === 'translate') commitTranslation();
   if (currentTab === 'camera') stopCamera();
+  if (currentTab === 'talk') stopListening();
   currentTab = name;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === `tab-${name}`));
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
@@ -765,7 +766,7 @@ $('tab-talk').addEventListener('click', async (e) => {
     }
     return;
   }
-  if (micOwner) return;
+  if (micOwner || listener) return;
   // Start listening straight from the tap (iOS requires it); only wait if a language must be downloaded first.
   if (missingPacks([settings.convA, settings.convB]).length && !(await ensurePacks([settings.convA, settings.convB]))) return;
   const started = await startRecording(side, sideLang(side), (text) => {
@@ -789,6 +790,139 @@ $('c-clear').addEventListener('click', () => {
   renderTranscript();
   updatePartner();
 });
+
+// ---------------------------------------------------------------------------
+// Listen mode — live translated subtitles of what people nearby are saying
+// ---------------------------------------------------------------------------
+
+let listener = null;
+let wakeLock = null;
+let phraseChain = Promise.resolve();
+const listenSrc = () => settings.listenSrc ?? settings.lastPhotoLang ?? (settings.target !== 'it' ? 'it' : 'es');
+const listenTgt = () => settings.listenTgt ?? (settings.target === listenSrc() ? 'en' : settings.target);
+
+function renderListenLangs() {
+  $('l-source').textContent = `👂 ${nameOf(listenSrc())}`;
+  $('l-target').textContent = nameOf(listenTgt());
+  $('l-speak').classList.toggle('on', Boolean(settings.listenSpeak));
+}
+
+function setListenMode(mode) {
+  $('c-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+  $('c-listen').hidden = mode !== 'listen';
+  $('c-convo').hidden = mode === 'listen';
+  if (mode !== 'listen') stopListening();
+  else renderListenLangs();
+}
+$('c-mode').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-mode]');
+  if (button) setListenMode(button.dataset.mode);
+});
+
+function addHeard(original, translated) {
+  $('l-empty').hidden = true;
+  const feed = $('l-feed');
+  const item = document.createElement('div');
+  item.className = 'listen-item';
+  item.innerHTML = `<p class="orig" dir="auto">${esc(original)}</p><p class="trans" dir="auto">${esc(translated)}</p><div class="meta">${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>`;
+  feed.appendChild(item);
+  while (feed.querySelectorAll('.listen-item').length > 200) feed.querySelector('.listen-item').remove();
+  $('l-live').scrollIntoView({ block: 'end', behavior: 'smooth' });
+}
+
+async function startListening() {
+  if (listener || micOwner) return;
+  const src = listenSrc();
+  const tgt = listenTgt();
+  if (missingPacks([src, tgt]).length && !(await ensurePacks([src, tgt]))) return;
+  // Without the iPhone's built-in recognition, the on-phone speech model does the listening.
+  if (!LiveRecognizer.available && !(await ensureSpeechModel())) return;
+  stopSpeaking();
+  releaseOcr();
+  releaseCameraReader();
+  warmUp([src, tgt]);
+
+  listener = new ContinuousListener({
+    onPhrase: (text) => {
+      // Translate phrases one after another so they appear in order.
+      phraseChain = phraseChain.then(async () => {
+        try {
+          const translated = await translate(text, src, tgt);
+          addHeard(text, translated);
+          if (settings.listenSpeak) speak(translated, tgt, settings.speechRate);
+        } catch (error) {
+          addHeard(text, '…');
+        }
+      });
+    },
+    onPartial: (text) => {
+      $('l-live-text').textContent = text && text !== '…' ? text : text === '…' ? 'Understanding…' : `Listening for ${nameOf(src)}…`;
+    },
+    transcribeChunk: async (audio) => {
+      if (!speechInstalled) return '';
+      return voice.transcribe(audio, src);
+    },
+  });
+  try {
+    const mode = await listener.start(lang(src).bcp47);
+    if (mode === 'chunks' && !speechInstalled && !(await ensureSpeechModel())) {
+      stopListening();
+      return;
+    }
+  } catch (error) {
+    listener = null;
+    toast(/not-allowed|blocked/i.test(error.message) ? 'Microphone access was blocked. Tap Listen again and choose Allow.' : 'Couldn’t start listening. Try again.', 4000);
+    return;
+  }
+  $('l-toggle').classList.add('on');
+  $('l-toggle-text').textContent = 'Stop';
+  $('l-live').hidden = false;
+  $('l-live-text').textContent = `Listening for ${nameOf(src)}…`;
+  try {
+    wakeLock = await navigator.wakeLock?.request('screen'); // keep the screen on while listening
+  } catch {
+    wakeLock = null;
+  }
+}
+
+function stopListening() {
+  if (!listener) return;
+  const l = listener;
+  listener = null;
+  l.stop();
+  wakeLock?.release?.().catch?.(() => {});
+  wakeLock = null;
+  $('l-toggle').classList.remove('on');
+  $('l-toggle-text').textContent = 'Listen';
+  $('l-live').hidden = true;
+}
+
+$('l-toggle').addEventListener('click', () => (listener ? stopListening() : startListening()));
+$('l-clear').addEventListener('click', () => {
+  $('l-feed').querySelectorAll('.listen-item').forEach((el) => el.remove());
+  $('l-empty').hidden = false;
+});
+$('l-speak').addEventListener('click', () => {
+  saveSettings({ listenSpeak: !settings.listenSpeak });
+  renderListenLangs();
+  toast(settings.listenSpeak ? 'Translations will be read aloud — use earphones so Parlivo doesn’t hear itself.' : 'Read-aloud off', 3500);
+});
+$('l-source').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'They Speak', current: listenSrc() });
+  if (!code) return;
+  const wasOn = Boolean(listener);
+  stopListening();
+  saveSettings({ listenSrc: code, ...(code === listenTgt() ? { listenTgt: code === 'en' ? 'it' : 'en' } : {}) });
+  renderListenLangs();
+  if (wasOn) startListening();
+});
+$('l-target').addEventListener('click', async () => {
+  const code = await pickLanguage({ title: 'Show In', current: listenTgt() });
+  if (!code) return;
+  saveSettings({ listenTgt: code });
+  renderListenLangs();
+});
+document.addEventListener('visibilitychange', () => document.hidden && stopListening());
 
 // ---------------------------------------------------------------------------
 // Camera tab — live viewfinder, auto translation, or tap the words
