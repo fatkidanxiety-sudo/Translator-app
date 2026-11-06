@@ -57,6 +57,12 @@ export async function loadRegistry() {
 
 const fileKey = (pair, kind) => `${KEY_BASE}${pair}/${kind}`;
 
+/** Unpacked size of a pair's model files in bytes (0 if unknown). */
+export function pairBytes(pair) {
+  const entry = registry?.pairs[pair];
+  return entry ? Object.values(entry.files).reduce((sum, f) => sum + f.size, 0) : 0;
+}
+
 /** Checks which model pairs are already on the device (fast: one listing of the cache). */
 export async function scanInstalled() {
   const reg = await loadRegistry().catch(() => null);

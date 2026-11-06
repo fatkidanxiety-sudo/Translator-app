@@ -190,7 +190,14 @@ function renderDownloads() {
   updatePhraseNeed();
 }
 
-models.onChange(() => renderDownloads());
+let lastInstalledCount = -1;
+models.onChange((st) => {
+  renderDownloads();
+  if (!st.downloading && st.installed.size !== lastInstalledCount) {
+    lastInstalledCount = st.installed.size;
+    warmUsualPairs();
+  }
+});
 $('dl-strip').addEventListener('click', () => openSettings());
 $('hero-download').addEventListener('click', () => downloadEverything());
 $('hero-choose').addEventListener('click', () => openSettings());
@@ -217,6 +224,7 @@ function showTab(name) {
   }
   if (name === 'history') renderHistory();
   if (name === 'camera') enterCamera();
+  if (name === 'talk' || name === 'translate') warmUsualPairs();
   window.scrollTo({ top: 0 });
 }
 $('tabbar').addEventListener('click', (e) => {
@@ -437,6 +445,7 @@ $('t-target').addEventListener('click', async () => {
   saveSettings({ target: code });
   renderTranslateLangs();
   liveTranslate();
+  warmUsualPairs();
 });
 
 $('t-swap').addEventListener('click', () => {
@@ -711,7 +720,7 @@ $('tab-talk').addEventListener('click', async (e) => {
     if (code) {
       saveSettings(side === 'a' ? { convA: code } : { convB: code });
       renderTalkSides();
-      warmUp(settings.convA, settings.convB);
+      warmUsualPairs();
     }
     return;
   }
@@ -1409,6 +1418,17 @@ $('s-delete-all').addEventListener('click', () => {
   }
 });
 
+/** Loads the language pairs the person is most likely to use next, in the background. */
+function warmUsualPairs() {
+  const from = settings.source !== 'auto' ? settings.source : settings.lastSpoken ?? detected ?? deviceLang();
+  const pairs = [];
+  const add = (a, b) => a && b && a !== b && pairReady(a, b) && pairs.push([a, b], [b, a]);
+  if (currentTab === 'talk') add(settings.convA, settings.convB);
+  add(from, settings.target);
+  add(settings.convA, settings.convB);
+  warmUp(...pairs);
+}
+
 // ---------------------------------------------------------------------------
 // App start
 // ---------------------------------------------------------------------------
@@ -1488,9 +1508,8 @@ models
   .scanInstalled()
   .then(() => {
     renderDownloads();
-    // Load the usual language pair in the background so the first translation is instant.
-    const src = settings.source === 'auto' ? settings.lastOther && 'en' : settings.source;
-    if (src && pairReady(src, settings.target)) warmUp(src, settings.target);
+    // Start the engine and load the usual languages now, so translating is instant when needed.
+    warmUsualPairs();
   })
   .catch(() => renderDownloads());
 
