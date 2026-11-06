@@ -1,9 +1,9 @@
-import { LANGUAGES, lang, PACK_CODES, packsFor, SPEECH_MODEL_MB } from './languages.js';
+import { LANGUAGES, lang, PACK_CODES, packsFor, SPEECH_MODEL, SPEECH_MODEL_MB } from './languages.js';
 import * as models from './models.js';
 import { translate, translateMany, warmUp } from './translate.js';
 import * as voice from './engine.js';
 import { detectLanguage } from './detect.js';
-import { Recorder, speak, stopSpeaking } from './speech.js';
+import { Recorder, LiveRecognizer, speak, stopSpeaking } from './speech.js';
 import { autoRead, tesseractLangsFor, readText, prepareOcr, releaseOcr } from './ocr.js';
 import { cleanForOcr } from './ocr-prep.js';
 import { settings, saveSettings, getHistory, addHistory, updateHistory, deleteHistory, clearHistory, getPhraseCache, setPhraseCache } from './store.js';
@@ -77,7 +77,7 @@ const missingPacks = (codes) => [...new Set(codes)].filter((c) => c && c !== 'en
 // Downloads (one place for every screen)
 // ---------------------------------------------------------------------------
 
-let speechInstalled = localStorage.getItem('speechInstalled') === '1';
+let speechInstalled = localStorage.getItem('speechModel') === SPEECH_MODEL;
 let ocrReady = new Set(JSON.parse(localStorage.getItem('ocrReady') || '[]'));
 let bigJob = null; // { phase: 'languages' | 'voice' | 'camera', fraction }
 
@@ -141,7 +141,7 @@ async function downloadEverything() {
 
 function markSpeechInstalled() {
   speechInstalled = true;
-  localStorage.setItem('speechInstalled', '1');
+  localStorage.setItem('speechModel', SPEECH_MODEL);
 }
 
 function totalEverythingBytes(remainingOnly) {
@@ -211,7 +211,7 @@ function showTab(name) {
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
   $('page-title').textContent = TITLES[name];
   try {
-    sessionStorage.setItem('tab', name);
+    localStorage.setItem('lastTab', JSON.stringify({ name, at: Date.now() }));
   } catch {
     /* ignore */
   }
@@ -500,20 +500,31 @@ $('t-fav').addEventListener('click', () => {
   toast(getHistory().find((h) => h.id === lastResult.entryId)?.favorite ? 'Added to Favorites' : 'Removed from Favorites');
 });
 
-// ---- Voice input (on-device Whisper) ----
+// ---- Voice input ----
+// Uses the iPhone's built-in speech recognition when it can (instant, words appear as you speak),
+// otherwise records audio and runs the small on-phone Whisper model.
 
 const recorder = new Recorder();
+let live = null; // LiveRecognizer while listening with built-in recognition
 let micOwner = null; // 'translate' | 'a' | 'b'
+let micLang = null;
+let liveUnavailable = false; // built-in recognition failed this session (e.g. offline): use the on-phone model
+window.addEventListener('online', () => (liveUnavailable = false));
+
+const deviceLang = () => {
+  const code = (navigator.language || 'en').slice(0, 2);
+  return lang(code) ? code : 'en';
+};
 
 async function ensureSpeechModel() {
   if (speechInstalled) return true;
   if (!navigator.onLine) {
-    toast('Voice input needs a one-time download. Connect to the internet once, then it works offline.', 4000);
+    toast('Offline voice input needs a one-time download. Connect to the internet once, then it works offline.', 4000);
     return false;
   }
-  toast('Downloading voice input (one time)…', 60000);
+  toast('Downloading offline voice input (one time)…', 60000);
   try {
-    await voice.downloadSpeech((f) => ($('toast').textContent = `Downloading voice input… ${Math.round(f * 100)}%`));
+    await voice.downloadSpeech((f) => ($('toast').textContent = `Downloading offline voice input… ${Math.round(f * 100)}%`));
     markSpeechInstalled();
     toast('Voice input is ready');
     return true;
@@ -523,10 +534,27 @@ async function ensureSpeechModel() {
   }
 }
 
-async function startRecording(owner) {
-  if (!(await ensureSpeechModel())) return false;
+/** Starts listening. `languageCode` may be null (detect). `onWords(text)` gets words as they're heard. */
+async function startRecording(owner, languageCode, onWords) {
   stopSpeaking();
   releaseOcr(); // the phone has limited memory: free the camera engine while listening
+  micLang = languageCode;
+  if (LiveRecognizer.available && !liveUnavailable) {
+    const rec = new LiveRecognizer((text) => micOwner === owner && onWords?.(text));
+    try {
+      await rec.start(lang(languageCode ?? deviceLang()).bcp47);
+      live = rec;
+      micOwner = owner;
+      return true;
+    } catch (error) {
+      if (!error.fallback) {
+        toast(error.code === 'not-allowed' ? 'Microphone access was blocked. Tap the mic again and choose Allow.' : 'Couldn’t start listening. Try again.', 4000);
+        return false;
+      }
+      liveUnavailable = true; // fall through to the on-phone model
+    }
+  }
+  if (!(await ensureSpeechModel())) return false;
   try {
     await recorder.start();
     micOwner = owner;
@@ -537,11 +565,34 @@ async function startRecording(owner) {
   }
 }
 
-async function finishRecording(languageCode) {
+/** Stops listening and returns the words heard ('' if nothing, null if the person should try again). */
+async function finishRecording() {
   micOwner = null;
+  if (live) {
+    const rec = live;
+    live = null;
+    try {
+      return await rec.stop();
+    } catch (error) {
+      if (!error.fallback) throw error;
+      liveUnavailable = true;
+      toast('Switched to offline voice recognition — please say that again.', 3500);
+      return null;
+    }
+  }
   const audio = await recorder.stop();
   if (!audio || audio.length < 1600) return '';
-  return voice.transcribe(audio, languageCode);
+  return voice.transcribe(audio, micLang);
+}
+
+/** Which language to listen for in the Translate tab. */
+function translateListenLang() {
+  if (settings.source !== 'auto') return settings.source;
+  if (LiveRecognizer.available) {
+    const guess = detected ?? settings.lastSpoken ?? deviceLang();
+    return guess === settings.target ? (settings.target === 'en' ? settings.lastOther ?? 'es' : 'en') : guess;
+  }
+  return null; // Whisper detects the language itself
 }
 
 function setMicState(button, state) {
@@ -556,13 +607,16 @@ $('t-mic').addEventListener('click', async () => {
   if (micOwner === 'translate') {
     setMicState(button, 'working');
     try {
-      const text = await finishRecording(settings.source === 'auto' ? null : settings.source);
+      const text = await finishRecording();
       if (text) {
         input.value = text;
-        if (settings.source === 'auto') detected = detectLanguage(text);
+        if (settings.source === 'auto') {
+          detected = detectLanguage(text) ?? micLang;
+          if (detected) saveSettings({ lastSpoken: detected });
+        }
         renderTranslateLangs();
         await liveTranslate({ origin: 'voice', commit: true });
-      } else toast('Didn’t catch that. Try again.');
+      } else if (text === '') toast('Didn’t catch that. Try again.');
     } catch (error) {
       toast(friendlyError(error), 4000);
     } finally {
@@ -572,7 +626,11 @@ $('t-mic').addEventListener('click', async () => {
     return;
   }
   if (micOwner) return;
-  if (await startRecording('translate')) {
+  const started = await startRecording('translate', translateListenLang(), (text) => {
+    input.value = text;
+    renderTranslateLangs();
+  });
+  if (started) {
     setMicState(button, 'recording');
     input.value = '';
     input.placeholder = 'Listening… tap ■ when done';
@@ -627,7 +685,7 @@ function renderTranscript() {
   if (micOwner === 'a' || micOwner === 'b') {
     const el = document.createElement('div');
     el.className = `bubble ${micOwner} listening`;
-    el.innerHTML = `<p class="orig">${ICON.wave} Listening in ${esc(nameOf(sideLang(micOwner)))}… tap ■ when done</p>`;
+    el.innerHTML = `<p class="orig">${ICON.wave} Listening in ${esc(nameOf(sideLang(micOwner)))}… tap ■ when done</p><p class="trans heard"></p>`;
     box.appendChild(el);
   }
   if (convBusy) {
@@ -668,9 +726,9 @@ $('tab-talk').addEventListener('click', async (e) => {
     try {
       const from = sideLang(side);
       const to = sideLang(side === 'a' ? 'b' : 'a');
-      const heard = await finishRecording(from);
-      if (!heard) toast('Didn’t catch that. Try again.');
-      else {
+      const heard = await finishRecording();
+      if (heard === '') toast('Didn’t catch that. Try again.');
+      else if (heard) {
         convStage = 'Translating…';
         renderTranscript();
         const translated = await translate(heard, from, to);
@@ -689,8 +747,14 @@ $('tab-talk').addEventListener('click', async (e) => {
     return;
   }
   if (micOwner) return;
-  if (!(await ensurePacks([settings.convA, settings.convB]))) return;
-  if (await startRecording(side)) {
+  // Start listening straight from the tap (iOS requires it); only wait if a language must be downloaded first.
+  if (missingPacks([settings.convA, settings.convB]).length && !(await ensurePacks([settings.convA, settings.convB]))) return;
+  const started = await startRecording(side, sideLang(side), (text) => {
+    const bubble = document.querySelector('#c-transcript .bubble.listening .heard');
+    if (bubble) bubble.textContent = text;
+    updatePartner(text || `🎙️ ${nameOf(sideLang(side))}…`);
+  });
+  if (started) {
     document.querySelectorAll(`[data-mic="${side}"]`).forEach((b) => setMicState(b, 'recording'));
     renderTranscript();
     updatePartner(`🎙️ ${nameOf(sideLang(side))}…`);
@@ -726,25 +790,28 @@ async function enterCamera() {
   await startCamera();
 }
 
+let cameraReleaseTimer = null;
+
 async function startCamera() {
   $('p-photo').hidden = true;
   $('p-tools').hidden = true;
   $('p-lines').hidden = true;
+  clearTimeout(cameraReleaseTimer);
   if (!navigator.mediaDevices?.getUserMedia) {
     showCameraFallback();
     return;
   }
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
-      audio: false,
-    });
-    if (currentTab !== 'camera' || photo) {
-      stopCamera();
-      return;
+    // Reuse the open camera when possible: iOS asks for permission again whenever it's reopened.
+    if (!stream || !stream.getVideoTracks().some((t) => t.readyState === 'live')) {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+        audio: false,
+      });
     }
+    if (currentTab !== 'camera' || photo) return;
     const video = $('p-video');
-    video.srcObject = stream;
+    if (video.srcObject !== stream) video.srcObject = stream;
     await video.play().catch(() => {});
     $('p-live').hidden = false;
     $('p-start').hidden = true;
@@ -758,10 +825,18 @@ function showCameraFallback() {
   $('p-start').hidden = Boolean(photo);
 }
 
-function stopCamera() {
-  stream?.getTracks().forEach((t) => t.stop());
-  stream = null;
+/** Hides the viewfinder; the camera itself is closed only after a minute away from the Camera screen. */
+function stopCamera({ now = false } = {}) {
+  $('p-video').pause();
   $('p-live').hidden = true;
+  clearTimeout(cameraReleaseTimer);
+  const release = () => {
+    stream?.getTracks().forEach((t) => t.stop());
+    stream = null;
+    $('p-video').srcObject = null;
+  };
+  if (now) release();
+  else cameraReleaseTimer = setTimeout(() => currentTab !== 'camera' && release(), 60000);
 }
 
 $('p-shutter').addEventListener('click', () => {
@@ -1310,7 +1385,7 @@ $('settings').addEventListener('click', async (e) => {
     if (code === 'speech') {
       await voice.removeSpeech();
       speechInstalled = false;
-      localStorage.removeItem('speechInstalled');
+      localStorage.removeItem('speechModel');
     } else await models.removePacks([code]);
     renderDownloads();
     renderStorage();
@@ -1360,7 +1435,9 @@ navigator.storage?.persist?.().catch(() => {});
 caches
   .open('transformers-cache')
   .then(async (cache) => {
-    for (const request of await cache.keys()) if (request.url.includes('/Xenova/opus-mt-')) await cache.delete(request);
+    for (const request of await cache.keys()) {
+      if (request.url.includes('/Xenova/opus-mt-') || (request.url.includes('/Xenova/whisper-') && !request.url.includes(`/${SPEECH_MODEL}/`))) await cache.delete(request);
+    }
   })
   .catch(() => {});
 
@@ -1382,16 +1459,19 @@ $('install-tip-close').addEventListener('click', () => {
 
 // If iOS had to reload the app (e.g. low memory), come back to the same screen and text.
 try {
-  const savedText = sessionStorage.getItem('tInput');
-  if (savedText) input.value = savedText;
-  const savedTab = sessionStorage.getItem('tab');
-  if (savedTab && savedTab !== 'translate' && TITLES[savedTab]) setTimeout(() => showTab(savedTab), 0);
+  const saved = JSON.parse(localStorage.getItem('lastTab') || 'null');
+  if (saved && Date.now() - saved.at < 30 * 60 * 1000) {
+    const savedText = localStorage.getItem('tInput');
+    if (savedText) input.value = savedText;
+    if (saved.name !== 'translate' && TITLES[saved.name]) setTimeout(() => showTab(saved.name), 0);
+  }
 } catch {
   /* ignore */
 }
 input.addEventListener('input', () => {
   try {
-    sessionStorage.setItem('tInput', input.value);
+    localStorage.setItem('tInput', input.value);
+    localStorage.setItem('lastTab', JSON.stringify({ name: currentTab, at: Date.now() }));
   } catch {
     /* ignore */
   }

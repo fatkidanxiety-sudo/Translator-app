@@ -60,5 +60,6 @@ export function packsFor(src, tgt) {
   return [src, tgt].filter((c) => c !== 'en' && c !== undefined && src !== tgt);
 }
 
-export const SPEECH_MODEL = 'Xenova/whisper-base';
-export const SPEECH_MODEL_MB = 80;
+// Offline fallback when the iPhone's built-in speech recognition isn't available. Small and fast.
+export const SPEECH_MODEL = 'Xenova/whisper-tiny';
+export const SPEECH_MODEL_MB = 41;

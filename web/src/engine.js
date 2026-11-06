@@ -69,9 +69,9 @@ export function release() {
   worker = null;
 }
 
-// Free the voice engine after a minute without use.
+// Free the voice engine after 20 seconds without use (it reloads from the phone's cache in a moment).
 let idle = null;
 export function touch() {
   clearTimeout(idle);
-  idle = setTimeout(release, 60000);
+  idle = setTimeout(release, 20000);
 }
